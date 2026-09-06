@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.db
+experiments/*/
+!experiments/.gitkeep
+server.log
+.DS_Store
+node_modules/
+datasets/

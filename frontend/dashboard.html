@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SatMOT Research System &mdash; Live Run</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<header class="shell-header">
+  <div class="brand">
+    <div class="brand-mark"></div>
+    <div class="brand-text">
+      SatMOT Research System
+      <small id="run-subtitle">Live Run</small>
+    </div>
+  </div>
+  <nav class="nav-links">
+    <a href="index.html">New Experiment</a>
+    <a href="dashboard.html" class="active">Live Run</a>
+    <a href="explorer.html">Past Results</a>
+  </nav>
+</header>
+
+<main class="shell-main">
+  <div id="no-run" class="empty-state" style="display:none;">
+    No experiment selected. <a href="index.html">Create a new experiment</a> or open one from
+    <a href="explorer.html">Past Results</a>.
+  </div>
+
+  <div id="run-content">
+    <div style="display:flex; justify-content: space-between; align-items:flex-end; margin-bottom: 18px;">
+      <div>
+        <div class="eyebrow" id="status-badge-wrap"><span class="badge pending" id="status-badge">pending</span></div>
+        <h1 id="exp-name">&mdash;</h1>
+        <p class="subtext" id="exp-meta" style="margin:0;">&mdash;</p>
+      </div>
+      <div style="text-align:right;">
+        <div class="stat-label">Frame progress</div>
+        <div class="stat-value" id="frame-progress">0 / 0</div>
+        <button class="btn secondary" id="cancel-btn" style="margin-top:10px; display:none; color: var(--danger);">Cancel run</button>
+      </div>
+    </div>
+
+    <div class="sweep-track"><div class="sweep-fill" id="sweep-fill"></div></div>
+
+    <div class="three-col" style="margin-top: 22px;">
+      <!-- LEFT: pipeline stage rail -->
+      <div class="panel">
+        <h2>Pipeline</h2>
+        <div class="stage-rail" id="setup-rail"></div>
+        <div style="height:1px;background:var(--border-soft);margin:14px 0;"></div>
+        <div class="eyebrow" style="margin-bottom:10px;">Per-frame cycle</div>
+        <div class="stage-rail" id="cycle-rail"></div>
+        <div style="height:1px;background:var(--border-soft);margin:14px 0;"></div>
+        <div class="stage-rail" id="final-rail"></div>
+      </div>
+
+      <!-- CENTER: frame viewer + telemetry -->
+      <div>
+        <div class="panel">
+          <h2>Frame viewer</h2>
+          <div class="frame-viewer" id="frame-viewer">
+            <div class="placeholder">Waiting for frames&hellip;</div>
+          </div>
+          <div class="field-help" style="margin-top:8px;" id="frame-caption">&mdash;</div>
+        </div>
+
+        <div class="panel">
+          <h2>Telemetry</h2>
+          <div class="stat-row">
+            <div class="stat-box"><div class="stat-label">Confirmed tracks</div><div class="stat-value" id="stat-tracks">0</div></div>
+            <div class="stat-box"><div class="stat-label">Tentative (unconfirmed)</div><div class="stat-value mono" id="stat-tentative" style="color: var(--text-faint);">0</div></div>
+            <div class="stat-box"><div class="stat-label">Occluded now</div><div class="stat-value amber" id="stat-occluded">0</div></div>
+            <div class="stat-box"><div class="stat-label">Matched (frame)</div><div class="stat-value" id="stat-matched">0</div></div>
+            <div class="stat-box"><div class="stat-label">New tracks</div><div class="stat-value" id="stat-new">0</div></div>
+          </div>
+          <div class="stat-row" style="margin-top:12px;">
+            <div class="stat-box"><div class="stat-label">Homography mode</div><div class="stat-value mono" id="stat-hmode" style="font-size:15px;">&mdash;</div></div>
+            <div class="stat-box"><div class="stat-label">Transform quality</div><div class="stat-value" id="stat-hquality">&mdash;</div></div>
+            <div class="stat-box"><div class="stat-label">Recovery events</div><div class="stat-value" id="stat-recovery">0</div></div>
+            <div class="stat-box" title="See event log for details on what this means for this run">
+              <div class="stat-label">Compute device</div>
+              <div class="stat-value mono" id="stat-device" style="font-size:14px;">&mdash;</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" id="results-panel" style="display:none;">
+          <h2>Run summary</h2>
+          <div id="results-body" class="mono" style="font-size:12.5px; color: var(--text-dim); white-space:pre-wrap;"></div>
+          <a class="btn secondary" id="open-explorer-link" style="margin-top:14px;">Browse output folder &rarr;</a>
+        </div>
+      </div>
+
+      <!-- RIGHT: log stream -->
+      <div class="panel">
+        <h2>Event log</h2>
+        <div class="log-stream" id="log-stream"></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="js/api.js"></script>
+<script src="js/dashboard.js"></script>
+</body>
+</html>

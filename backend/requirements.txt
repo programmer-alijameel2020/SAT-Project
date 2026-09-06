@@ -1,0 +1,21 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+opencv-python-headless>=4.9
+numpy>=1.26
+scipy>=1.12
+sqlalchemy>=2.0
+aiofiles>=23.2
+python-multipart>=0.0.9
+websockets>=12.0
+pydantic>=2.6
+
+# --- Optional: GPU detection / future neural detector support ---
+# torch is NOT required for anything in this prototype to run -- the
+# geometry, tracker, and placeholder detector are all CPU-bound OpenCV/
+# NumPy/SciPy code that gains nothing from a GPU. It's only useful once
+# a real neural detector replaces SimpleMotionDetector (Phase 3 of the
+# roadmap). Left commented out because the correct install command
+# depends on your installed CUDA version -- get the right one from
+# https://pytorch.org/get-started/locally/ rather than uncommenting a
+# fixed version here.
+# torch>=2.2

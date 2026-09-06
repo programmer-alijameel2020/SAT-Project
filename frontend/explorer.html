@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SatMOT Research System &mdash; Past Results</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<header class="shell-header">
+  <div class="brand">
+    <div class="brand-mark"></div>
+    <div class="brand-text">
+      SatMOT Research System
+      <small>Experiment Archive</small>
+    </div>
+  </div>
+  <nav class="nav-links">
+    <a href="index.html">New Experiment</a>
+    <a href="dashboard.html">Live Run</a>
+    <a href="explorer.html" class="active">Past Results</a>
+  </nav>
+</header>
+
+<main class="shell-main">
+  <div class="eyebrow">Experiment archive</div>
+  <h1>Past results</h1>
+  <p class="subtext">
+    Every experiment run gets its own folder on disk (config, results, homography log,
+    overlay frames, event stream). Select a run to browse its output folder directly.
+  </p>
+
+  <div class="two-col" style="grid-template-columns: 380px 1fr;">
+    <div class="panel" style="padding: 0; overflow: hidden;">
+      <div style="padding: 16px 16px 0;"><h2>Runs</h2></div>
+      <table>
+        <thead><tr><th>Name</th><th>Mode</th><th>Status</th></tr></thead>
+        <tbody id="exp-table-body"></tbody>
+      </table>
+      <div id="exp-empty" class="empty-state" style="display:none;">
+        No experiments yet. <a href="index.html">Create one</a>.
+      </div>
+    </div>
+
+    <div>
+      <div class="panel" id="detail-panel" style="display:none;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+          <div>
+            <h2 id="detail-name">&mdash;</h2>
+            <p class="field-help" id="detail-meta" style="margin:0 0 4px;">&mdash;</p>
+          </div>
+          <div>
+            <a class="btn secondary" id="open-live-btn" style="margin-right:8px;">Open live view</a>
+            <button class="btn secondary" id="delete-btn" style="color: var(--danger);">Delete</button>
+          </div>
+        </div>
+
+        <div class="grid-2" style="margin-top:18px;">
+          <div>
+            <h2 style="font-size:13px; color: var(--text-dim);">Config</h2>
+            <pre class="mono" id="config-json" style="background:#06080d; padding:12px; border-radius:6px; font-size:11.5px; max-height:220px; overflow:auto; color: var(--text-dim);"></pre>
+          </div>
+          <div>
+            <h2 style="font-size:13px; color: var(--text-dim);">Results</h2>
+            <pre class="mono" id="results-json" style="background:#06080d; padding:12px; border-radius:6px; font-size:11.5px; max-height:220px; overflow:auto; color: var(--text-dim);"></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" id="files-panel" style="display:none;">
+        <h2>Output folder</h2>
+        <p class="field-help" id="folder-path" style="margin-top:-2px;">&mdash;</p>
+        <div class="file-tree" id="file-tree"></div>
+      </div>
+
+      <div class="panel" id="no-selection" >
+        <div class="empty-state">Select a run on the left to browse its output folder.</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="js/api.js"></script>
+<script src="js/explorer.js"></script>
+</body>
+</html>

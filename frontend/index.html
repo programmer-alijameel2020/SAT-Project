@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SatMOT Research System &mdash; New Experiment</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<header class="shell-header">
+  <div class="brand">
+    <div class="brand-mark"></div>
+    <div class="brand-text">
+      SatMOT Research System
+      <small>Homography-Grounded Occlusion Recovery &middot; MOT</small>
+    </div>
+  </div>
+  <nav class="nav-links">
+    <a href="index.html" class="active">New Experiment</a>
+    <a href="dashboard.html">Live Run</a>
+    <a href="explorer.html">Past Results</a>
+  </nav>
+</header>
+
+<main class="shell-main">
+  <div class="eyebrow">Step 1 of 1</div>
+  <h1>Configure a new experiment</h1>
+  <p class="subtext">
+    Every parameter here is saved alongside this run's results, so any experiment
+    can be reproduced or audited later from the Past Results file browser.
+  </p>
+
+  <div class="two-col" style="align-items: start;">
+    <div>
+      <div class="panel">
+        <h2>Quick presets</h2>
+        <div class="field" style="margin-top: 12px;">
+          <div class="radio-group" id="preset-group">
+            <div class="radio-chip selected" data-preset="demo">Demo (synthetic)</div>
+            <div class="radio-chip" data-preset="viso">VISO run</div>
+            <div class="radio-chip" data-preset="sdmcar">SDM-Car run</div>
+          </div>
+        </div>
+        <p class="field-help">
+          Presets just pre-fill the form below &mdash; every field stays editable.
+          "Demo" needs no dataset path and runs immediately, useful for verifying
+          the pipeline before pointing it at VISO / SDM-Car.
+        </p>
+      </div>
+
+      <div class="panel">
+        <h2>Ablation reference</h2>
+        <p class="field-help" style="margin-top: 8px;">
+          <b class="mono" style="color:var(--accent)">homography</b> &mdash; the proposed method:
+          residual predictor operates on platform-compensated trajectories.<br/><br/>
+          <b class="mono" style="color:var(--text)">affine</b> &mdash; compensation via affine fallback only.<br/><br/>
+          <b class="mono" style="color:var(--text-dim)">raw</b> &mdash; baseline: predictor fits raw pixel trajectories directly.
+        </p>
+      </div>
+    </div>
+
+    <div>
+      <form id="experiment-form">
+        <div class="panel">
+          <h2>Identification</h2>
+          <div class="field">
+            <label for="name">Experiment name</label>
+            <input type="text" id="name" placeholder="e.g. homography_vs_raw_viso_seq01" required />
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Dataset</h2>
+          <div class="field">
+            <label>Dataset source</label>
+            <div class="radio-group" id="dataset-source-group">
+              <div class="radio-chip" data-value="demo">demo</div>
+              <div class="radio-chip" data-value="VISO">VISO</div>
+              <div class="radio-chip" data-value="SDM-Car">SDM-Car</div>
+            </div>
+          </div>
+          <div class="field" id="dataset-root-field">
+            <label for="dataset_root">Dataset root directory (path on the server)</label>
+            <div style="display:flex; gap:8px;">
+              <input type="text" id="dataset_root" placeholder="/path/to/VISO" style="flex:1;" />
+              <button type="button" class="btn secondary" id="browse-btn" style="flex-shrink:0;">Browse&hellip;</button>
+            </div>
+            <div class="field-help">Point this at wherever you extracted the dataset archive. Remembers the last path you used per dataset source.</div>
+          </div>
+          <div class="field">
+            <button type="button" class="btn secondary" id="scan-btn">Scan for sequences</button>
+            <span id="scan-status" class="field-help" style="margin-left: 10px;"></span>
+          </div>
+          <div class="field" id="sequence-field" style="display:none;">
+            <label for="sequence_name">Sequence</label>
+            <select id="sequence_name"></select>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Proposed system parameters</h2>
+          <div class="field">
+            <label>Trajectory representation (ablation mode)</label>
+            <div class="radio-group" id="mode-group">
+              <div class="radio-chip" data-value="raw">raw</div>
+              <div class="radio-chip" data-value="affine">affine</div>
+              <div class="radio-chip selected" data-value="homography">homography</div>
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="field">
+              <label for="predictor_model">Residual predictor model</label>
+              <select id="predictor_model">
+                <option value="constant_velocity" selected>constant velocity</option>
+                <option value="quadratic">quadratic (ablation)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="window_length">Fitting window length (L)</label>
+              <input type="number" id="window_length" value="8" min="2" max="60" />
+            </div>
+            <div class="field">
+              <label for="kmax_occlusion">Max occlusion horizon (K_max, frames)</label>
+              <input type="number" id="kmax_occlusion" value="20" min="1" max="200" />
+              <div class="field-help">Now correctly governs track death, not just prediction &mdash; a track unseen longer than this is dropped.</div>
+            </div>
+            <div class="field">
+              <label for="min_hits_to_confirm">Min hits to confirm a track</label>
+              <input type="number" id="min_hits_to_confirm" value="3" min="1" max="20" />
+              <div class="field-help">A track must be matched this many times before it counts as real. Raise this if a noisy detector is producing a flood of one-frame spurious tracks.</div>
+            </div>
+            <div class="field">
+              <label for="max_frames">Max frames to process</label>
+              <input type="number" id="max_frames" value="150" min="5" max="5000" />
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Homography estimation gate</h2>
+          <div class="grid-3">
+            <div class="field">
+              <label for="min_inliers">Min inliers (m0)</label>
+              <input type="number" id="min_inliers" value="15" min="4" />
+            </div>
+            <div class="field">
+              <label for="min_inlier_ratio">Min inlier ratio (r0)</label>
+              <input type="number" id="min_inlier_ratio" value="0.35" step="0.05" min="0" max="1" />
+            </div>
+            <div class="field">
+              <label for="max_reproj_error">Max reprojection error (px)</label>
+              <input type="number" id="max_reproj_error" value="3.0" step="0.5" min="0.5" />
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Detector (host system, placeholder for prototype)</h2>
+          <div class="grid-3">
+            <div class="field">
+              <label for="det_min_area">Min blob area (px&sup2;)</label>
+              <input type="number" id="det_min_area" value="4" min="1" />
+            </div>
+            <div class="field">
+              <label for="det_max_area">Max blob area (px&sup2;)</label>
+              <input type="number" id="det_max_area" value="2500" min="10" />
+            </div>
+            <div class="field">
+              <label for="det_diff_thresh">Frame-diff threshold</label>
+              <input type="number" id="det_diff_thresh" value="18" min="1" max="255" />
+              <div class="field-help">Real satellite video is noisier than the demo source &mdash; if a run reports thousands of detections per frame, raise this (try 40&ndash;60) before launching a full run.</div>
+            </div>
+          </div>
+          <div class="field">
+            <label for="det_max_detections">Hard cap: max detections kept per frame</label>
+            <input type="number" id="det_max_detections" value="250" min="10" max="5000" style="max-width: 220px;" />
+            <div class="field-help">Safety valve regardless of the thresholds above &mdash; keeps only the most confident detections so a noisy frame degrades tracking quality rather than stalling the run.</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Live playback &amp; storage</h2>
+          <div class="grid-2">
+            <div class="field">
+              <label for="step_delay_ms">Per-frame delay for live viewing (ms)</label>
+              <input type="number" id="step_delay_ms" value="60" min="0" max="2000" />
+              <div class="field-help">0 = run as fast as possible; higher values make the dashboard animation easier to follow.</div>
+            </div>
+            <div class="field">
+              <label for="save_frame_every">Save overlay frame every N frames</label>
+              <input type="number" id="save_frame_every" value="5" min="1" max="100" />
+            </div>
+          </div>
+        </div>
+
+        <button type="submit" class="btn" id="submit-btn">Create &amp; launch experiment &rarr;</button>
+        <span id="submit-status" class="field-help" style="margin-left: 12px;"></span>
+      </form>
+    </div>
+  </div>
+</main>
+
+<!-- Folder browser modal -->
+<div id="browse-modal" style="display:none; position:fixed; inset:0; background:rgba(5,7,12,0.75); z-index:100; align-items:center; justify-content:center;">
+  <div class="panel" style="width:560px; max-width:90vw; max-height:75vh; display:flex; flex-direction:column;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <h2 style="margin:0;">Choose a folder</h2>
+      <button type="button" class="btn secondary" id="browse-close-btn" style="padding:6px 10px;">&times;</button>
+    </div>
+    <div class="mono field-help" id="browse-current-path" style="margin-bottom:10px; word-break:break-all;">&mdash;</div>
+    <div id="browse-list" style="overflow-y:auto; flex:1; border:1px solid var(--border-soft); border-radius:6px; padding:6px;"></div>
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:14px;">
+      <button type="button" class="btn secondary" id="browse-cancel-btn">Cancel</button>
+      <button type="button" class="btn" id="browse-select-btn">Select this folder</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/api.js"></script>
+<script src="js/setup.js"></script>
+</body>
+</html>
