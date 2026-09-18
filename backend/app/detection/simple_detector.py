@@ -29,6 +29,10 @@ class Detection:
     center: np.ndarray    # [cx, cy]
     confidence: float
     appearance: np.ndarray = None  # optional descriptor (mean color patch)
+    source_id: int = None  # ground-truth track ID, set only by GroundTruthDetector;
+                            # unused by the tracker itself, exists purely so an
+                            # external evaluator can know which GT identity each
+                            # detection came from without the tracker needing to.
 
 
 class SimpleMotionDetector:

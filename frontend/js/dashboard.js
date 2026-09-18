@@ -186,7 +186,7 @@ function handleEvent(ev) {
     maxFrames = ev.n_frames || 0;
     document.getElementById("frame-progress").textContent = `0 / ${maxFrames}`;
     document.getElementById("exp-meta").textContent =
-      `${expConfig ? expConfig.dataset_source : ""} \u00b7 ${ev.sequence_name} \u00b7 mode=${expConfig ? expConfig.trajectory_mode : ""}`;
+      `${expConfig ? expConfig.dataset_source : ""} \u00b7 ${ev.sequence_name} \u00b7 mode=${expConfig ? expConfig.trajectory_mode : ""} \u00b7 detector=${expConfig && expConfig.params_json ? expConfig.params_json.detector_mode : "placeholder"}`;
     if (ev.fallback_used) {
       logLine(`<b>WARNING</b> ${ev.message}`, "warn");
     } else {
@@ -294,7 +294,7 @@ async function init() {
     expConfig = await apiGet(`/api/experiments/${uid}`);
     document.getElementById("exp-name").textContent = expConfig.name;
     document.getElementById("exp-meta").textContent =
-      `${expConfig.dataset_source} \u00b7 ${expConfig.sequence_name || "(auto)"} \u00b7 mode=${expConfig.trajectory_mode} \u00b7 created ${fmtTime(expConfig.created_at)}`;
+      `${expConfig.dataset_source} \u00b7 ${expConfig.sequence_name || "(auto)"} \u00b7 mode=${expConfig.trajectory_mode} \u00b7 detector=${expConfig.params_json ? expConfig.params_json.detector_mode : "placeholder"} \u00b7 created ${fmtTime(expConfig.created_at)}`;
     document.getElementById("status-badge").textContent = expConfig.status;
     document.getElementById("status-badge").className = "badge " + expConfig.status;
     if (expConfig.status === "running" || expConfig.status === "pending") {

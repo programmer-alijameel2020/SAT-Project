@@ -158,6 +158,53 @@
         </div>
 
         <div class="panel">
+          <h2>Synthetic platform-motion injection</h2>
+          <p class="field-help" style="margin-bottom:12px;">
+            VISO's released frames were measured to carry ~0 platform motion (confirmed both
+            numerically and visually) &mdash; without injection, raw-vs-homography has nothing
+            to compensate for regardless of mechanism quality. This is precedented: DeTracker's
+            own authors built a "Simulated Unstabilized" variant of SDM-Car for the same reason.
+          </p>
+          <div class="field">
+            <label>Inject synthetic drift</label>
+            <div class="radio-group" id="motion-injection-group">
+              <div class="radio-chip" data-value="off">Off</div>
+              <div class="radio-chip selected" data-value="on">On</div>
+            </div>
+          </div>
+          <div class="grid-2" id="motion-injection-fields">
+            <div class="field">
+              <label for="synth_motion_px_per_frame">Drift magnitude (px/frame, random-walk avg)</label>
+              <input type="number" id="synth_motion_px_per_frame" value="2.0" min="0.1" step="0.5" />
+            </div>
+            <div class="field">
+              <label for="synth_motion_seed">Random seed</label>
+              <input type="number" id="synth_motion_seed" value="42" min="0" />
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Detector mode</h2>
+          <div class="field">
+            <div class="radio-group" id="detector-mode-group">
+              <div class="radio-chip selected" data-value="placeholder">Placeholder (frame-diff)</div>
+              <div class="radio-chip" data-value="ground_truth">Ground truth (evaluation-only)</div>
+            </div>
+          </div>
+          <p class="field-help">
+            <b class="mono" style="color:var(--text)">Placeholder</b> &mdash; the frame-differencing
+            detector, standing in for a real neural detector (Phase 3). Detector noise means
+            most "occlusion events" from this mode are detector dropout, not genuine occlusion.<br/><br/>
+            <b class="mono" style="color:var(--accent)">Ground truth</b> &mdash; feeds the dataset's
+            own annotated boxes as detections. Isolates the tracker/geometry mechanism from
+            detector quality entirely, so occlusion events correspond to real ground-truth gaps.
+            Requires a sequence with annotations (VISO's gt.txt / SDM-Car's gt.csv). Not a measure
+            of real-world performance &mdash; it deliberately uses the answer key.
+          </p>
+        </div>
+
+        <div class="panel">
           <h2>Detector (host system, placeholder for prototype)</h2>
           <div class="grid-3">
             <div class="field">
@@ -197,6 +244,7 @@
         </div>
 
         <button type="submit" class="btn" id="submit-btn">Create &amp; launch experiment &rarr;</button>
+        <button type="button" class="btn secondary" id="reset-defaults-btn" style="margin-left:8px;">Reset parameters to defaults</button>
         <span id="submit-status" class="field-help" style="margin-left: 12px;"></span>
       </form>
     </div>

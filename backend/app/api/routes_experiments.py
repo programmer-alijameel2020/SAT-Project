@@ -30,6 +30,10 @@ class ExperimentCreateRequest(BaseModel):
     kmax_occlusion: int = 20
     min_hits_to_confirm: int = 3
     max_frames: Optional[int] = 150
+    detector_mode: str = "placeholder"    # "placeholder" | "ground_truth"
+    inject_synthetic_motion: bool = False
+    synth_motion_px_per_frame: float = 2.0
+    synth_motion_seed: int = 42
     min_inliers: int = 15
     min_inlier_ratio: float = 0.35
     max_reproj_error: float = 3.0

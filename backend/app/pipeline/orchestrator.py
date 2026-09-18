@@ -11,12 +11,16 @@ from __future__ import annotations
 import asyncio
 import datetime
 import traceback
+import numpy as np
 from typing import Callable, Awaitable, Dict
 
 from ..datasets.viso import VISOLoader
 from ..datasets.sdmcar import SDMCarLoader
 from ..datasets.demo_synth import DemoSyntheticLoader
 from ..detection.simple_detector import SimpleMotionDetector
+from ..detection.gt_detector import GroundTruthDetector
+from ..evaluation.gt_evaluator import GTAnchoredEvaluator
+from ..datasets.motion_injection import generate_translation_walk, warp_frame, warp_box
 from ..tracking.tracker import MotionGroundedTracker
 from ..storage.experiment_store import ExperimentStore
 from ..db.database import SessionLocal
@@ -118,18 +122,90 @@ async def run_experiment(experiment_uid: str, params: dict, emit: EmitFn):
         await send(EV.STAGE_VIDEO_TO_FRAMES,
                    message=f"Decoding sequence into frame array (max {max_frames} frames)")
 
+        # ---- synthetic platform-motion injection (optional) ------------------
+        # See app/datasets/motion_injection.py docstring for why this exists:
+        # confirmed empirically that VISO's released frames carry ~0 platform
+        # motion, so without this, raw-vs-homography has nothing to compensate
+        # for regardless of whether the mechanism works.
+        detector_mode = params.get("detector_mode", "placeholder")
+        inject_motion = params.get("inject_synthetic_motion", False)
+        synth_H_list = None
+        if inject_motion:
+            synth_H_list = generate_translation_walk(
+                n_frames=max_frames,
+                px_per_frame=params.get("synth_motion_px_per_frame", 2.0),
+                seed=params.get("synth_motion_seed", 42),
+            )
+            await send(EV.STAGE_INIT,
+                       message=(f"Synthetic platform motion injection ENABLED: "
+                                f"~{params.get('synth_motion_px_per_frame', 2.0)} px/frame "
+                                f"random-walk drift applied to observed frames"
+                                + (" and ground-truth boxes" if detector_mode == "ground_truth" else "")
+                                + ". Absolute accuracy numbers from this run reflect a "
+                                  "synthetic stress test, not real-world platform motion."))
+
+        # ---- build detector ---------------------------------------------------
+        gt_detector = None
+        gt_evaluator = None
+        detector = None
+
+        if detector_mode == "ground_truth":
+            annotations = loader.load_annotations(sequence)
+            if not annotations or not annotations.get("tracks"):
+                raise RuntimeError(
+                    f"detector_mode='ground_truth' was requested but sequence "
+                    f"'{sequence.name}' has no parsable annotations. Ground-truth "
+                    f"detection mode requires a sequence with a gt.txt (VISO) or "
+                    f"gt.csv (SDM-Car) file."
+                )
+            gt_detector = GroundTruthDetector(annotations["tracks"])
+            gt_evaluator = GTAnchoredEvaluator(annotations["tracks"])
+            await send(EV.STAGE_INIT,
+                       message=(f"Using ground-truth boxes as detections "
+                                f"({gt_detector.n_frames_with_annotations} annotated frames) "
+                                f"-- this isolates the tracker/geometry mechanism from "
+                                f"detector quality. Occlusion events now correspond "
+                                f"directly to genuine gaps in the ground truth, not "
+                                f"detector dropout."))
+        else:
+            detector = SimpleMotionDetector(
+                min_area=params.get("det_min_area", 4),
+                max_area=params.get("det_max_area", 2500),
+                diff_thresh=params.get("det_diff_thresh", 18),
+                max_detections_per_frame=params.get("det_max_detections", 250),
+            )
+
         # ---- build tracker ---------------------------------------------------
-        detector = SimpleMotionDetector(
-            min_area=params.get("det_min_area", 4),
-            max_area=params.get("det_max_area", 2500),
-            diff_thresh=params.get("det_diff_thresh", 18),
-            max_detections_per_frame=params.get("det_max_detections", 250),
-        )
+        # min_hits_to_confirm exists to protect against the PLACEHOLDER
+        # detector's spurious one-frame blobs -- a track that goes unmatched
+        # even once before reaching min_hits is killed immediately (see
+        # tracker.py step() section 4) rather than waiting through the full
+        # occlusion window, since an unconfirmed track is more likely noise
+        # than a real target. That assumption is WRONG when using the
+        # ground-truth detector: every detection there is verified real by
+        # definition, so the same rule instead kills genuinely valid,
+        # continuously-visible tracks on any transient association hiccup,
+        # spawning a fresh track ID next frame -- counted as a spurious
+        # "occlusion event" even though nothing was actually occluded. This
+        # was confirmed directly: a GT-detector run reported 260 occlusion
+        # events on a 260-frame sequence whose ground truth contains only
+        # 14 genuine gaps. Forcing min_hits_to_confirm=1 in ground-truth
+        # mode makes every GT-derived track confirmed on its first
+        # observation, removing this failure mode entirely.
+        effective_min_hits = 1 if detector_mode == "ground_truth" else params.get("min_hits_to_confirm", 3)
+        if detector_mode == "ground_truth" and params.get("min_hits_to_confirm", 3) != 1:
+            await send(EV.STAGE_INIT,
+                       message=(f"min_hits_to_confirm overridden to 1 for ground-truth mode "
+                                f"(requested {params.get('min_hits_to_confirm', 3)}) -- the "
+                                f"tentative-track pruning it controls exists to protect against "
+                                f"noisy detector blobs, which don't exist when using verified "
+                                f"ground-truth boxes."))
+
         tracker = MotionGroundedTracker(
             trajectory_mode=params.get("trajectory_mode", "homography"),
             window_length=params.get("window_length", 8),
             kmax_occlusion=params.get("kmax_occlusion", 20),
-            min_hits_to_confirm=params.get("min_hits_to_confirm", 3),
+            min_hits_to_confirm=effective_min_hits,
             predictor_model=params.get("predictor_model", "constant_velocity"),
             homography_kwargs=dict(
                 min_inliers=params.get("min_inliers", 15),
@@ -152,12 +228,52 @@ async def run_experiment(experiment_uid: str, params: dict, emit: EmitFn):
             await send(EV.STAGE_FRAME_LOADED, frame=frame_idx,
                        message=f"Frame {frame_idx} loaded", shape=list(frame_bgr.shape))
 
+            # Apply synthetic platform-motion drift, if enabled, BEFORE
+            # anything downstream sees this frame. This is the key
+            # architectural point: injection happens upstream of the
+            # tracker's own homography estimator, so that estimator (and
+            # everything after it) is completely unmodified -- it just
+            # estimates whatever motion is actually present in the frames
+            # it's handed, synthetic or real, exactly as it would for a
+            # genuinely unstabilized satellite video.
+            if synth_H_list is not None and frame_idx < len(synth_H_list):
+                H_synth = synth_H_list[frame_idx]
+                frame_bgr = warp_frame(frame_bgr, H_synth)
+            else:
+                H_synth = None
+
             import cv2
-            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-            dets = detector.detect(gray)
+            if gt_detector is not None:
+                gt_frame_idx = frame_idx + getattr(loader, "gt_frame_index_base", 0)
+                dets = gt_detector.detect_for_frame(gt_frame_idx)
+                if H_synth is not None:
+                    for d in dets:
+                        new_box = warp_box(d.box.tolist(), H_synth)
+                        d.box = np.array(new_box, dtype=np.float64)
+                        d.center = np.array([new_box[0] + new_box[2] / 2.0,
+                                             new_box[1] + new_box[3] / 2.0], dtype=np.float64)
+            else:
+                gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+                dets = detector.detect(gray)
             await send(EV.STAGE_DETECTION, frame=frame_idx, n_detections=len(dets))
 
             result = tracker.step(frame_bgr, prev_frame, dets)
+
+            if gt_evaluator is not None:
+                matched_this_frame = [
+                    dict(id=t["id"], box=t["box"])
+                    for t in result["tracks_snapshot"] if t["visible"] and t["box"] is not None
+                ]
+                # dets here are the GT-derived detections for this exact
+                # frame, already warped by synthetic motion injection if
+                # enabled -- the same coordinate system the tracker itself
+                # operated in, which is what the evaluator needs (see
+                # gt_evaluator.py docstring for why the raw unwarped
+                # annotations can't be used directly for this).
+                gt_boxes_this_frame = {
+                    d.source_id: d.box.tolist() for d in dets if d.source_id is not None
+                }
+                gt_evaluator.accumulate_frame(gt_frame_idx, matched_this_frame, gt_boxes_this_frame)
 
             await send(EV.STAGE_HOMOGRAPHY, frame=frame_idx,
                        mode=result["homography_mode"], quality=result["homography_quality"])
@@ -196,6 +312,8 @@ async def run_experiment(experiment_uid: str, params: dict, emit: EmitFn):
         summary["n_frames_processed"] = n_processed
         summary["cancelled"] = cancelled
         summary["compute_device"] = device_info.to_dict()
+        if gt_evaluator is not None:
+            summary["gt_anchored_evaluation"] = gt_evaluator.finalize()
 
         await send(EV.STAGE_SAVING, message="Writing results to experiment folder")
         store.save_results(summary)

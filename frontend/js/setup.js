@@ -1,5 +1,7 @@
 let selectedDatasetSource = "demo";
 let selectedMode = "homography";
+let selectedDetectorMode = "placeholder";
+let motionInjectionOn = true;
 let foundSequences = [];
 let browseCurrentPath = "";
 let browseCurrentParent = null;
@@ -20,6 +22,45 @@ function rememberPath(src, path) {
   } catch (e) { /* ignore (private browsing, etc.) */ }
 }
 
+// ---------------------------------------------------------------------- //
+// Generic field persistence -- every parameter field remembers its last
+// value across sessions. This exists because a silently-reset parameter
+// (e.g. det_diff_thresh defaulting back to 18 on a fresh page load) can
+// invalidate an ablation run without any error being raised -- the run
+// completes "successfully," just against the wrong settings. Restoring
+// on load and saving on every change closes that gap for good rather
+// than relying on remembering to retype values each time.
+// ---------------------------------------------------------------------- //
+const PERSISTED_FIELD_IDS = [
+  "predictor_model", "window_length", "kmax_occlusion", "min_hits_to_confirm",
+  "max_frames", "min_inliers", "min_inlier_ratio", "max_reproj_error",
+  "det_min_area", "det_max_area", "det_diff_thresh", "det_max_detections",
+  "save_frame_every", "step_delay_ms", "synth_motion_px_per_frame", "synth_motion_seed",
+];
+const FIELD_KEY = (id) => `satmot_field_${id}`;
+const MODE_KEY = "satmot_trajectory_mode";
+const SOURCE_KEY = "satmot_dataset_source";
+
+function restorePersistedFields() {
+  PERSISTED_FIELD_IDS.forEach((id) => {
+    const saved = localStorage.getItem(FIELD_KEY(id));
+    if (saved !== null) {
+      const el = document.getElementById(id);
+      if (el) el.value = saved;
+    }
+  });
+}
+
+function wirePersistence() {
+  PERSISTED_FIELD_IDS.forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("change", () => {
+      try { localStorage.setItem(FIELD_KEY(id), el.value); } catch (e) { /* ignore */ }
+    });
+  });
+}
+
 function initChipGroup(groupId, onSelect, valueAttr = "data-value") {
   const group = document.getElementById(groupId);
   group.querySelectorAll(".radio-chip").forEach((chip) => {
@@ -38,12 +79,41 @@ initChipGroup("dataset-source-group", (val) => {
     const remembered = loadRememberedPath(val);
     if (remembered) document.getElementById("dataset_root").value = remembered;
   }
+  try { localStorage.setItem(SOURCE_KEY, val); } catch (e) { /* ignore */ }
 });
-// default select "demo" chip visually
-document.querySelector('#dataset-source-group [data-value="demo"]').classList.add("selected");
-document.getElementById("dataset-root-field").style.display = "none";
 
-initChipGroup("mode-group", (val) => { selectedMode = val; });
+// Restore last-used dataset source chip (defaults to "demo" if none saved)
+const savedSource = (() => { try { return localStorage.getItem(SOURCE_KEY); } catch (e) { return null; } })();
+const initialSourceValue = savedSource || "demo";
+document.querySelector(`#dataset-source-group [data-value="${initialSourceValue}"]`)?.click();
+if (!document.querySelector(`#dataset-source-group [data-value="${initialSourceValue}"].selected`)) {
+  // fallback if the saved value somehow doesn't match a chip
+  document.querySelector('#dataset-source-group [data-value="demo"]').classList.add("selected");
+  document.getElementById("dataset-root-field").style.display = "none";
+}
+
+initChipGroup("mode-group", (val) => {
+  selectedMode = val;
+  try { localStorage.setItem(MODE_KEY, val); } catch (e) { /* ignore */ }
+});
+
+// Restore last-used trajectory mode chip (defaults to "homography")
+const savedMode = (() => { try { return localStorage.getItem(MODE_KEY); } catch (e) { return null; } })();
+if (savedMode) {
+  document.querySelector(`#mode-group [data-value="${savedMode}"]`)?.click();
+}
+
+initChipGroup("detector-mode-group", (val) => {
+  selectedDetectorMode = val;
+});
+
+initChipGroup("motion-injection-group", (val) => {
+  motionInjectionOn = (val === "on");
+  document.getElementById("motion-injection-fields").style.display = motionInjectionOn ? "grid" : "none";
+});
+
+restorePersistedFields();
+wirePersistence();
 
 initChipGroup("preset-group", (val) => {
   const datasetGroup = document.getElementById("dataset-source-group");
@@ -153,6 +223,13 @@ document.getElementById("browse-select-btn").addEventListener("click", () => {
   browseModal.style.display = "none";
 });
 
+document.getElementById("reset-defaults-btn").addEventListener("click", () => {
+  if (!confirm("Reset all detector/tracker parameters to their defaults? This clears remembered values (dataset path is kept).")) return;
+  PERSISTED_FIELD_IDS.forEach((id) => localStorage.removeItem(FIELD_KEY(id)));
+  localStorage.removeItem(MODE_KEY);
+  window.location.reload();
+});
+
 document.getElementById("experiment-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const submitBtn = document.getElementById("submit-btn");
@@ -176,6 +253,10 @@ document.getElementById("experiment-form").addEventListener("submit", async (e) 
     dataset_root: document.getElementById("dataset_root").value,
     sequence_name: sequenceName,
     trajectory_mode: selectedMode,
+    detector_mode: selectedDetectorMode,
+    inject_synthetic_motion: motionInjectionOn,
+    synth_motion_px_per_frame: parseFloat(document.getElementById("synth_motion_px_per_frame").value),
+    synth_motion_seed: parseInt(document.getElementById("synth_motion_seed").value),
     predictor_model: document.getElementById("predictor_model").value,
     window_length: parseInt(document.getElementById("window_length").value),
     kmax_occlusion: parseInt(document.getElementById("kmax_occlusion").value),

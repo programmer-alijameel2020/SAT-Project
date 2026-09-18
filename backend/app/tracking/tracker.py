@@ -20,7 +20,7 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 
-from ..geometry.homography import PlatformMotionEstimator, HomographyResult
+from ..geometry.homography import PlatformMotionEstimator, HomographyResult, transform_point
 from ..geometry.decomposition import TransformChain
 from ..geometry.representation import represent_history, reproject_forecast, Mode
 from ..geometry.residual_predictor import robust_fit, confidence_weights
@@ -101,10 +101,25 @@ class MotionGroundedTracker:
         else:
             hres = HomographyResult(np.eye(3), "identity", 0, 0, 0.0, 0.0, 1.0, True)
         self.chain.push(hres.H)
+
+        # Translation magnitude of the platform transform, measured at the
+        # image center -- this is what was missing from the log. Fit
+        # quality (inliers/reprojection error) tells you how CONFIDENTLY
+        # the homography was estimated; it says nothing about how MUCH
+        # the platform actually moved. A perfectly static camera produces
+        # a high-confidence near-identity homography too -- so without
+        # this number, "0.38% fallback rate" can't distinguish "lots of
+        # platform motion, compensated well" from "the platform barely
+        # moves in this clip at all."
+        img_h, img_w = frame_bgr.shape[:2]
+        center = np.array([img_w / 2.0, img_h / 2.0])
+        displaced = transform_point(hres.H, center)
+        translation_px = float(np.linalg.norm(displaced - center))
+
         self.homography_log.append(dict(
             frame=t, mode=hres.mode, n_matches=hres.n_matches, n_inliers=hres.n_inliers,
             inlier_ratio=round(hres.inlier_ratio, 4), reproj_error=round(hres.reproj_error, 4),
-            quality=round(hres.quality_score, 4),
+            quality=round(hres.quality_score, 4), translation_px=round(translation_px, 3),
         ))
         self.geometry_time_ms.append((time.perf_counter() - tg0) * 1000)
 
@@ -247,9 +262,18 @@ class MotionGroundedTracker:
             sum(1 for h in self.homography_log if h["mode"] != "homography")
             / max(1, len(self.homography_log))
         )
+        translations = [h["translation_px"] for h in self.homography_log if h["mode"] == "homography"]
+        platform_motion_px = dict(
+            mean=round(float(np.mean(translations)), 3) if translations else None,
+            median=round(float(np.median(translations)), 3) if translations else None,
+            max=round(float(np.max(translations)), 3) if translations else None,
+            p95=round(float(np.percentile(translations, 95)), 3) if translations else None,
+            n_frames_measured=len(translations),
+        )
         return dict(
             trajectory_mode=self.mode,
             n_frames=self.frame_idx + 1,
+            platform_motion_px=platform_motion_px,
             n_occlusion_events=n_events,
             n_recovered=len(recovered),
             n_lost=len(lost),
