@@ -24,14 +24,95 @@ from __future__ import annotations
 
 import os
 import glob
+import statistics
 import cv2
 import numpy as np
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from .base import BaseDatasetLoader, SequenceInfo
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
 VIDEO_EXTS = (".avi", ".mp4", ".mov", ".mkv")
+
+
+def _detect_delimiter(sample_lines: List[str]) -> str:
+    """VISO's own releases are NOT format-consistent across categories --
+    confirmed directly: car_001's gt.txt is comma-separated, ship_045's is
+    whitespace-separated (with irregular multi-space runs). Picks whichever
+    delimiter yields >=6 columns on a majority of the sample."""
+    comma_ok = sum(1 for l in sample_lines if len(l.strip().split(",")) >= 6)
+    if comma_ok >= max(1, len(sample_lines) // 2):
+        return ","
+    return " "
+
+
+def _split_line(line: str, delimiter: str) -> List[str]:
+    if delimiter == ",":
+        return [p.strip() for p in line.strip().split(",") if p.strip() != ""]
+    return line.strip().split()  # any whitespace run, handles irregular spacing
+
+
+def _detect_box_format(rows: List[tuple]) -> str:
+    """rows: sampled (v1, v2, v3, v4) raw column values. Returns 'xywh' or
+    'corners'. VISO's ship_045 encodes [x1, y1, x2, y2] rather than
+    [x, y, w, h] -- confirmed directly (a raw 5th-column value of 774 is
+    implausible as a width for VISO's small targets, but exactly matches
+    x2 under corner encoding once x1 is subtracted). Distinguishes the two
+    by checking whether treating column 5 as a literal width gives
+    implausibly large values while treating it as a second x-coordinate
+    gives small, plausible target sizes -- VISO targets are consistently
+    well under 100px in either category confirmed so far."""
+    if not rows:
+        return "xywh"
+    wh_widths = [r[2] for r in rows]
+    corner_widths = [max(0.0, r[2] - r[0]) for r in rows]
+    med_wh = statistics.median(wh_widths)
+    med_corner = statistics.median(corner_widths)
+    if med_wh > 100 and 0 < med_corner < 100:
+        return "corners"
+    return "xywh"
+
+
+def parse_viso_gt_file(gt_path: str) -> Dict[int, list]:
+    """
+    Robustly parses a VISO gt.txt file, auto-detecting both confirmed
+    format variations (see _detect_delimiter / _detect_box_format).
+    Returns {track_id: [{"frame": int, "box": [x, y, w, h]}, ...]}.
+    Shared by VISOLoader.load_annotations() and the standalone diagnostic
+    scripts (analyze_gt_occlusions.py, survey_gt_gaps.py) so a format
+    fix only needs to happen in one place.
+    """
+    with open(gt_path, "r") as fh:
+        raw_lines = [l for l in fh if l.strip()]
+    if not raw_lines:
+        return {}
+
+    delimiter = _detect_delimiter(raw_lines[:20])
+
+    parsed_rows = []
+    for line in raw_lines:
+        parts = _split_line(line, delimiter)
+        if len(parts) < 6:
+            continue
+        try:
+            frame, tid, v1, v2, v3, v4 = (float(p) for p in parts[:6])
+        except ValueError:
+            continue
+        parsed_rows.append((int(frame), int(tid), v1, v2, v3, v4))
+
+    if not parsed_rows:
+        return {}
+
+    box_format = _detect_box_format([(r[2], r[3], r[4], r[5]) for r in parsed_rows[:50]])
+
+    tracks: Dict[int, list] = {}
+    for frame, tid, v1, v2, v3, v4 in parsed_rows:
+        if box_format == "corners":
+            x, y, w, h = v1, v2, max(0.0, v3 - v1), max(0.0, v4 - v2)
+        else:
+            x, y, w, h = v1, v2, v3, v4
+        tracks.setdefault(tid, []).append(dict(frame=frame, box=[x, y, w, h]))
+    return tracks
 
 
 class VISOLoader(BaseDatasetLoader):
@@ -114,14 +195,5 @@ class VISOLoader(BaseDatasetLoader):
         gt_path = self._find_gt(sequence.path) if os.path.isdir(sequence.path) else None
         if gt_path is None:
             return None
-        tracks = {}
-        with open(gt_path, "r") as fh:
-            for line in fh:
-                parts = line.strip().split(",")
-                if len(parts) < 6:
-                    continue
-                frame, tid, x, y, w, h = map(float, parts[:6])
-                tracks.setdefault(int(tid), []).append(
-                    dict(frame=int(frame), box=[x, y, w, h])
-                )
+        tracks = parse_viso_gt_file(gt_path)
         return {"tracks": tracks} if tracks else None

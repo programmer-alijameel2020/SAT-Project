@@ -9,6 +9,7 @@ from .db.database import init_db
 from .api.routes_experiments import router as experiments_router
 from .api.routes_datasets import router as datasets_router
 from .api.routes_fs import router as fs_router
+from .api.routes_reports import router as reports_router
 
 app = FastAPI(
     title="Satellite MOT Research System",
@@ -29,6 +30,7 @@ app.add_middleware(
 app.include_router(experiments_router)
 app.include_router(datasets_router)
 app.include_router(fs_router)
+app.include_router(reports_router)
 
 
 @app.on_event("startup")

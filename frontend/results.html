@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SatMOT Research System &mdash; Results</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css" />
+<style>
+  .fig-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 18px; }
+  .fig-card { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: var(--radius); overflow: hidden; }
+  .fig-card img { width: 100%; display: block; background: #fff; }
+  .fig-card-body { padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; }
+  .fig-card-title { font-size: 12.5px; color: var(--text); }
+  .fig-card a { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+  .stat-value.small { font-size: 15px; }
+  table.data-table { font-family: var(--font-mono); font-size: 11.5px; }
+  table.data-table th, table.data-table td { padding: 6px 10px; }
+</style>
+</head>
+<body>
+
+<header class="shell-header">
+  <div class="brand">
+    <div class="brand-mark"></div>
+    <div class="brand-text">
+      SatMOT Research System
+      <small>Scientific Results &amp; Reports</small>
+    </div>
+  </div>
+  <nav class="nav-links">
+    <a href="index.html">New Experiment</a>
+    <a href="dashboard.html">Live Run</a>
+    <a href="explorer.html">Past Results</a>
+    <a href="results.html" class="active">Results</a>
+  </nav>
+</header>
+
+<main class="shell-main">
+  <div class="eyebrow">Aggregate analysis</div>
+  <h1>Scientific results &amp; reports</h1>
+  <p class="subtext">
+    Generates a full statistical report (Wilson confidence intervals, paired McNemar tests,
+    odds ratios, forest plots, heatmaps, and efficiency tables) from every experiment on disk
+    matching a name prefix. Every figure is saved as both PDF (in the report's own folder, for
+    papers) and PNG (shown below).
+  </p>
+
+  <div class="panel">
+    <h2>Generate a report</h2>
+    <div class="grid-2" style="align-items:end;">
+      <div class="field">
+        <label for="prefix-input">Name prefix filter</label>
+        <input type="text" id="prefix-input" value="batch_" placeholder="e.g. batch_ (empty = all experiments)" />
+        <div class="field-help">Matches experiment names starting with this string. Leave blank to include every experiment on disk.</div>
+      </div>
+      <div class="field">
+        <button class="btn" id="generate-btn">Generate report &rarr;</button>
+        <span id="generate-status" class="field-help" style="margin-left:10px;"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="past-reports-panel">
+    <h2>Past reports</h2>
+    <div id="past-reports-list" class="field-help">Loading&hellip;</div>
+  </div>
+
+  <div id="report-content" style="display:none;">
+    <div class="panel">
+      <h2>Headline statistics</h2>
+      <div class="stat-row">
+        <div class="stat-box"><div class="stat-label">Raw recovery</div><div class="stat-value" id="stat-raw-rate">&mdash;</div></div>
+        <div class="stat-box"><div class="stat-label">Homography recovery</div><div class="stat-value" id="stat-hom-rate">&mdash;</div></div>
+        <div class="stat-box"><div class="stat-label">McNemar p-value</div><div class="stat-value small" id="stat-pvalue">&mdash;</div></div>
+        <div class="stat-box"><div class="stat-label">Odds ratio (95% CI)</div><div class="stat-value small" id="stat-or">&mdash;</div></div>
+      </div>
+      <div class="stat-row" style="margin-top:12px;">
+        <div class="stat-box"><div class="stat-label">Total genuine gaps</div><div class="stat-value" id="stat-n-gaps">&mdash;</div></div>
+        <div class="stat-box"><div class="stat-label">Sequences</div><div class="stat-value" id="stat-n-seq">&mdash;</div></div>
+        <div class="stat-box"><div class="stat-label">Categories</div><div class="stat-value" id="stat-n-cat">&mdash;</div></div>
+        <div class="stat-box"><div class="stat-label">Runs included</div><div class="stat-value" id="stat-n-runs">&mdash;</div></div>
+      </div>
+      <p class="field-help" id="report-meta" style="margin-top:12px;">&mdash;</p>
+    </div>
+
+    <div class="panel">
+      <h2>Figures</h2>
+      <p class="field-help" style="margin-top:-4px;">Click a figure to view full size. Each has a PDF download link for use in a paper.</p>
+      <div class="fig-grid" id="fig-grid"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Tables</h2>
+      <div id="tables-container"></div>
+    </div>
+  </div>
+</main>
+
+<script src="js/api.js"></script>
+<script src="js/results.js"></script>
+</body>
+</html>

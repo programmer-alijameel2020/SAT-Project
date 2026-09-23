@@ -1,0 +1,83 @@
+r"""
+Standalone CLI version of the full scientific report -- generates the
+exact same tables and figures (PDF + PNG) as the web app's Results page,
+using the same underlying app.analysis modules, so the two can never
+disagree. Useful for running headless, in a script, or just preferring
+the terminal.
+
+Usage:
+    python generate_report.py --prefix batch_
+    python generate_report.py --prefix "" --experiments-root "D:\...\experiments"
+
+Output goes to <experiments_root>/_reports/<report_id>/ -- figures/ has
+every plot as both .pdf and .png, tables/ has every table as both .csv
+and .json, and summary.json has the headline numbers. This is the same
+folder the web Results page reads from, so a report generated here shows
+up there too (and vice versa).
+"""
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from app.analysis.report_generator import generate_report
+
+DEFAULT_EXPERIMENTS_ROOT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "experiments"
+)
+DEFAULT_EXPERIMENTS_ROOT = os.path.abspath(DEFAULT_EXPERIMENTS_ROOT)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--experiments-root", default=DEFAULT_EXPERIMENTS_ROOT)
+    ap.add_argument("--prefix", default="batch_",
+                     help="Only include experiments whose name starts with this. "
+                          "Pass an empty string to include every experiment on disk.")
+    args = ap.parse_args()
+
+    reports_root = os.path.join(args.experiments_root, "_reports")
+    print(f"Loading experiments from {args.experiments_root} (prefix='{args.prefix}') ...")
+    summary = generate_report(args.experiments_root, args.prefix, reports_root)
+
+    if "error" in summary:
+        print(f"\n{summary['error']}")
+        sys.exit(1)
+
+    report_dir = os.path.join(reports_root, summary["report_id"])
+    print(f"\n=== REPORT {summary['report_id']} ===")
+    print(f"Runs included:       {summary['n_runs']}")
+    print(f"Genuine gaps total:  {summary['n_gaps_total']}")
+    print(f"Sequences:           {summary['n_sequences']}")
+    print(f"Categories:          {summary['n_categories']}")
+    print()
+    print(f"Raw recovery:         {summary['raw_recovered']}/{summary['raw_total']} "
+          f"({summary['raw_recovery_rate']:.1%})" if summary['raw_total'] else "Raw recovery: n/a")
+    print(f"Homography recovery:  {summary['homography_recovered']}/{summary['homography_total']} "
+          f"({summary['homography_recovery_rate']:.1%})" if summary['homography_total'] else "Homography recovery: n/a")
+    print()
+    print(f"Discordant pairs:     {summary['n_discordant_pairs']} "
+          f"({summary['favor_homography']} favor homography, {summary['favor_raw']} favor raw)")
+    if summary["mcnemar_p_value"] is not None:
+        sig = ("***" if summary["mcnemar_p_value"] < 0.001 else
+               "**" if summary["mcnemar_p_value"] < 0.01 else
+               "*" if summary["mcnemar_p_value"] < 0.05 else "n.s.")
+        print(f"McNemar exact p-value: {summary['mcnemar_p_value']:.6f}  ({sig})")
+    if summary["odds_ratio"] is not None:
+        print(f"Odds ratio:            {summary['odds_ratio']:.3f}  "
+              f"[{summary['odds_ratio_ci_low']:.3f}, {summary['odds_ratio_ci_high']:.3f}]")
+
+    print(f"\nFigures ({len(summary['figures'])}, each as .pdf + .png):")
+    for fig in summary["figures"]:
+        status = f"ERROR: {fig['error']}" if "error" in fig else "OK"
+        print(f"  {fig['name']:32s} {status}")
+    print(f"\nTables ({len(summary['tables'])}, each as .csv + .json):")
+    for tbl in summary["tables"]:
+        print(f"  {tbl['name']}")
+
+    print(f"\nAll files written to: {report_dir}")
+
+
+if __name__ == "__main__":
+    main()

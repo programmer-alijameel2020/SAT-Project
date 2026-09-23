@@ -20,24 +20,22 @@ Usage:
     python analyze_gt_occlusions.py "D:\\...\\VISO\\mot\\mot\\car\\001\\gt\\gt.txt"
 """
 import argparse
-import csv
 from collections import defaultdict
+
+from app.datasets.viso import parse_viso_gt_file
 
 
 def load_gt(path):
-    """frame,id,x,y,w,h,conf,-1,-1,-1 -- MOT-style, comma-separated."""
+    """frame,id,x,y,w,h,... -- delegates to the shared, format-tolerant
+    VISO parser (app/datasets/viso.py), which auto-detects both confirmed
+    delimiter variants (comma vs. whitespace) and box encodings (x,y,w,h
+    vs. x1,y1,x2,y2 corners) across VISO's own releases. Only frame
+    numbers are needed here -- gap-finding is a presence/absence question,
+    independent of box format."""
+    tracks_with_boxes = parse_viso_gt_file(path)
     tracks = defaultdict(list)
-    with open(path, newline="") as fh:
-        reader = csv.reader(fh)
-        for row in reader:
-            if len(row) < 2:
-                continue
-            try:
-                frame = int(float(row[0]))
-                tid = int(float(row[1]))
-            except ValueError:
-                continue
-            tracks[tid].append(frame)
+    for tid, entries in tracks_with_boxes.items():
+        tracks[tid] = [e["frame"] for e in entries]
     return tracks
 
 
