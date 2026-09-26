@@ -58,8 +58,31 @@ def paired_odds_ratio_ci(n01: int, n10: int, z: float = WILSON_Z) -> Tuple[float
 def mcnemar_exact_pvalue(n01: int, n10: int) -> Optional[float]:
     """Two-sided exact McNemar test p-value via the binomial distribution
     -- avoids adding scipy as a hard dependency of this module by
-    implementing the exact binomial tail sum directly (small, standard
-    formula; matches scipy.stats.binomtest(n01, n01+n10, 0.5) exactly)."""
+    implementing the exact binomial tail sum directly (matches
+    scipy.stats.binomtest(n01, n01+n10, 0.5) exactly). Uses a log-sum-exp
+    accumulation rather than naively summing exp() terms directly: with
+    thousands of highly skewed discordant pairs, the true p-value can be
+    astronomically small (e.g. 1e-80 range), and naive summation risks
+    every individual term underflowing to a true 0.0 before they're ever
+    added -- log-sum-exp stays numerically valid down to values Python
+    floats can represent at all (~1e-308)."""
+    n = n01 + n10
+    if n == 0:
+        return None
+    log_p = mcnemar_log10_pvalue(n01, n10)
+    if log_p is None:
+        return None
+    log_p_nat = log_p * math.log(10)
+    return math.exp(log_p_nat) if log_p_nat > -700 else 0.0  # true underflow only past ~1e-304
+
+
+def mcnemar_log10_pvalue(n01: int, n10: int) -> Optional[float]:
+    """log10 of the two-sided exact McNemar p-value -- the numerically
+    robust and directly citable form for very small p-values (e.g.
+    reporting "p < 10^-85" in a paper is both more informative and more
+    honest than a value that rounds to 0.000000). Computed via
+    log-sum-exp so it stays accurate however small the true p-value is,
+    unlike computing p first and taking its log afterward."""
     n = n01 + n10
     if n == 0:
         return None
@@ -69,17 +92,15 @@ def mcnemar_exact_pvalue(n01: int, n10: int) -> Optional[float]:
         return math.lgamma(n_ + 1) - math.lgamma(k_ + 1) - math.lgamma(n_ - k_ + 1)
 
     log_p_half = -n * math.log(2)
-    # sum P(X <= k) + P(X >= n-k) under Binomial(n, 0.5), avoiding double
-    # counting the center term when n is even and k == n/2
-    total = 0.0
-    for i in range(0, k + 1):
-        total += math.exp(log_binom(n, i) + log_p_half)
+    log_terms = [log_binom(n, i) + log_p_half for i in range(0, k + 1)]
     upper_start = n - k
-    for i in range(upper_start, n + 1):
-        if i <= k:
-            continue  # already counted above
-        total += math.exp(log_binom(n, i) + log_p_half)
-    return min(1.0, total)
+    log_terms += [log_binom(n, i) + log_p_half for i in range(upper_start, n + 1) if i > k]
+
+    # log-sum-exp: log(sum(exp(x_i))) = m + log(sum(exp(x_i - m))), m = max(x_i)
+    m = max(log_terms)
+    total = sum(math.exp(t - m) for t in log_terms)
+    log_p_nat = m + math.log(total)
+    return min(0.0, log_p_nat / math.log(10))
 
 
 def bucket_of(duration: int) -> str:
@@ -166,6 +187,12 @@ def load_experiment_records(
             platform_motion_configured_px=config.get("synth_motion_px_per_frame"),
             n_frames=results.get("n_frames"),
             cancelled=results.get("cancelled"),
+            # The tracker's own internal occlusion bookkeeping -- kept
+            # specifically to substantiate the "internal count is
+            # inflated relative to genuine GT gaps" finding with real
+            # per-sequence numbers, not just the single car_001 anecdote
+            # that originally surfaced it.
+            n_occlusion_events_internal=results.get("n_occlusion_events"),
         ))
 
         gt_eval = results.get("gt_anchored_evaluation")
@@ -228,3 +255,46 @@ def paired_discordant_counts(gap_rows: List[dict], group_key_fn=None) -> Dict[tu
         else:
             counts[g][3] += 1
     return {k: tuple(v) for k, v in counts.items()}
+
+
+def build_paired_records(gap_rows: List[dict]) -> List[dict]:
+    """
+    One row per genuine occlusion gap, with BOTH conditions' outcomes on
+    the same row (wide format) -- the exact reviewer-reproducibility
+    artifact for the paired analysis: everything needed to independently
+    recompute Wilson CIs, the exact McNemar p-value, and paired odds
+    ratios from scratch, without needing any of this project's own code.
+    Rows where only one mode's outcome exists (an incomplete pair) are
+    still included with the missing side as None, rather than silently
+    dropped, so the export is a complete audit trail of every genuine
+    gap the campaign touched.
+    """
+    paired: Dict[tuple, dict] = {}
+    for row in gap_rows:
+        pair_key = (row["dataset_source"], row["sequence"], row["seed"],
+                    row["gt_id"], row["start"], row["end"])
+        if pair_key not in paired:
+            paired[pair_key] = dict(
+                dataset_source=row["dataset_source"], category=row["category"],
+                sequence=row["sequence"], seed=row["seed"], gt_id=row["gt_id"],
+                start=row["start"], end=row["end"], duration=row["duration"],
+                duration_bucket=row["duration_bucket"],
+                raw_recovered=None, homography_recovered=None,
+                raw_run_uid=None, homography_run_uid=None,
+            )
+        paired[pair_key][f"{row['mode']}_recovered"] = row["recovered"]
+        paired[pair_key][f"{row['mode']}_run_uid"] = row["run_uid"]
+
+    out = []
+    for rec in paired.values():
+        rr, hr = rec["raw_recovered"], rec["homography_recovered"]
+        if rr is None or hr is None:
+            concordance = "incomplete_pair"
+        elif rr == hr:
+            concordance = "concordant"
+        else:
+            concordance = "discordant_favor_homography" if hr and not rr else "discordant_favor_raw"
+        rec["concordance"] = concordance
+        out.append(rec)
+    out.sort(key=lambda r: (r["dataset_source"], r["sequence"], r["seed"], r["gt_id"], r["start"]))
+    return out

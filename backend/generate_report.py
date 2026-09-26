@@ -63,7 +63,16 @@ def main():
         sig = ("***" if summary["mcnemar_p_value"] < 0.001 else
                "**" if summary["mcnemar_p_value"] < 0.01 else
                "*" if summary["mcnemar_p_value"] < 0.05 else "n.s.")
-        print(f"McNemar exact p-value: {summary['mcnemar_p_value']:.6f}  ({sig})")
+        # Very small p-values (routine at this sample size) round to a
+        # useless 0.000000 under fixed-decimal formatting -- show
+        # scientific notation for anything below 1e-4, where that
+        # starts to matter, and report the robust log10 form alongside
+        # it (directly citable in a paper: "p < 10^-88").
+        p = summary["mcnemar_p_value"]
+        p_str = f"{p:.6f}" if p >= 1e-4 else f"{p:.4e}"
+        log10_str = (f"  (log10 p = {summary['mcnemar_log10_p_value']})"
+                     if summary.get("mcnemar_log10_p_value") is not None else "")
+        print(f"McNemar exact p-value: {p_str}  ({sig}){log10_str}")
     if summary["odds_ratio"] is not None:
         print(f"Odds ratio:            {summary['odds_ratio']:.3f}  "
               f"[{summary['odds_ratio_ci_low']:.3f}, {summary['odds_ratio_ci_high']:.3f}]")

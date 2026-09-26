@@ -16,7 +16,8 @@ import uuid
 from . import plots as P
 from .metrics import (
     load_experiment_records, group_recovery, paired_discordant_counts,
-    wilson_ci, paired_odds_ratio_ci, mcnemar_exact_pvalue, bucket_of,
+    wilson_ci, paired_odds_ratio_ci, mcnemar_exact_pvalue, mcnemar_log10_pvalue,
+    bucket_of, build_paired_records,
 )
 
 FIGURES = [
@@ -82,6 +83,7 @@ def _build_tables(gap_rows: list, run_rows: list, tables_dir: str) -> list:
         hom_rec, hom_tot = by_seq_mode.get((seq, "homography"), (0, 0))
         both, neither, n01, n10 = discordant_by_seq.get((seq,), (0, 0, 0, 0))
         p = mcnemar_exact_pvalue(n01, n10)
+        log10p = mcnemar_log10_pvalue(n01, n10)
         orv, or_lo, or_hi = paired_odds_ratio_ci(n01, n10) if (n01 + n10) else (None, None, None)
         rows.append(dict(
             sequence=seq, raw_recovered=raw_rec, raw_total=raw_tot,
@@ -89,7 +91,12 @@ def _build_tables(gap_rows: list, run_rows: list, tables_dir: str) -> list:
             homography_recovered=hom_rec, homography_total=hom_tot,
             homography_rate=round(hom_rec / hom_tot, 4) if hom_tot else None,
             n_discordant=n01 + n10, favor_homography=n01, favor_raw=n10,
-            mcnemar_p=round(p, 6) if p is not None else None,
+            # Full precision, NOT rounded to a fixed decimal count -- a
+            # p-value this small (routinely far below 1e-6 for
+            # well-powered sequences) rounds to a hard 0.0 otherwise,
+            # destroying the actual magnitude. log10_p is the
+            # numerically robust, directly citable form ("p < 10^-88").
+            mcnemar_p=p, mcnemar_log10_p=round(log10p, 3) if log10p is not None else None,
             odds_ratio=round(orv, 4) if orv else None,
             or_ci_low=round(or_lo, 4) if or_lo else None,
             or_ci_high=round(or_hi, 4) if or_hi else None,
@@ -97,7 +104,7 @@ def _build_tables(gap_rows: list, run_rows: list, tables_dir: str) -> list:
     _write_table(rows, os.path.join(tables_dir, "summary_by_sequence"),
                  ["sequence", "raw_recovered", "raw_total", "raw_rate",
                   "homography_recovered", "homography_total", "homography_rate",
-                  "n_discordant", "favor_homography", "favor_raw", "mcnemar_p",
+                  "n_discordant", "favor_homography", "favor_raw", "mcnemar_p", "mcnemar_log10_p",
                   "odds_ratio", "or_ci_low", "or_ci_high"])
     manifest.append(dict(name="summary_by_sequence", title="Summary by Sequence (with per-sequence McNemar)"))
 
@@ -134,6 +141,72 @@ def _build_tables(gap_rows: list, run_rows: list, tables_dir: str) -> list:
     _write_table(rows, os.path.join(tables_dir, "latency_summary"),
                  ["mode", "n_runs", "mean_total_latency_ms", "mean_geometry_latency_ms", "mean_p95_latency_ms"])
     manifest.append(dict(name="latency_summary", title="Latency / Efficiency Summary"))
+
+    # 6. Raw paired gap-level records -- full reviewer-reproducibility
+    # export: every genuine gap, both conditions' outcomes on one row,
+    # everything needed to independently recompute every statistic in
+    # this report from scratch.
+    paired_records = build_paired_records(gap_rows)
+    _write_table(paired_records, os.path.join(tables_dir, "paired_gap_records"),
+                 ["dataset_source", "category", "sequence", "seed", "gt_id", "start", "end",
+                  "duration", "duration_bucket", "raw_recovered", "homography_recovered",
+                  "raw_run_uid", "homography_run_uid", "concordance"])
+    manifest.append(dict(name="paired_gap_records",
+                          title="Raw Paired Gap-Level Records (full reproducibility export)"))
+
+    # 7. Platform-motion injection: configured vs. measured, per sequence
+    by_seq_motion: dict = {}
+    for r in run_rows:
+        if r["platform_motion_mean_px"] is None:
+            continue
+        by_seq_motion.setdefault(r["sequence"], []).append(
+            (r["platform_motion_mean_px"], r["platform_motion_configured_px"]))
+    rows = []
+    for seq in sorted(by_seq_motion.keys()):
+        measured = [v[0] for v in by_seq_motion[seq]]
+        configured = [v[1] for v in by_seq_motion[seq] if v[1] is not None]
+        rows.append(dict(
+            sequence=seq, n_runs=len(measured),
+            configured_px_per_frame=configured[0] if configured else None,
+            measured_mean_px_per_frame=round(sum(measured) / len(measured), 4),
+            measured_min_px_per_frame=round(min(measured), 4),
+            measured_max_px_per_frame=round(max(measured), 4),
+        ))
+    _write_table(rows, os.path.join(tables_dir, "platform_motion_by_sequence"),
+                 ["sequence", "n_runs", "configured_px_per_frame", "measured_mean_px_per_frame",
+                  "measured_min_px_per_frame", "measured_max_px_per_frame"])
+    manifest.append(dict(name="platform_motion_by_sequence",
+                          title="Synthetic Motion Injection: Configured vs. Measured, by Sequence"))
+
+    # 8. Internal (tracker bookkeeping) vs. GT-anchored occlusion counts,
+    # per sequence -- direct, per-sequence evidence for the inflation
+    # finding that originally motivated building the GT-anchored
+    # evaluator at all (previously only shown as a single car_001
+    # anecdote: 851 internal events vs. 14 genuine gaps).
+    by_seq_counts: dict = {}
+    for r in run_rows:
+        if r["n_occlusion_events_internal"] is None or r["n_genuine_gt_gaps"] is None:
+            continue
+        by_seq_counts.setdefault(r["sequence"], []).append(
+            (r["n_occlusion_events_internal"], r["n_genuine_gt_gaps"]))
+    rows = []
+    for seq in sorted(by_seq_counts.keys()):
+        internal_vals = [v[0] for v in by_seq_counts[seq]]
+        true_vals = set(v[1] for v in by_seq_counts[seq])
+        true_n = true_vals.pop() if len(true_vals) == 1 else max(true_vals)
+        mean_internal = sum(internal_vals) / len(internal_vals)
+        rows.append(dict(
+            sequence=seq, n_genuine_gt_gaps=true_n,
+            mean_internal_occlusion_events=round(mean_internal, 1),
+            min_internal_occlusion_events=min(internal_vals),
+            max_internal_occlusion_events=max(internal_vals),
+            inflation_ratio_mean=round(mean_internal / true_n, 2) if true_n else None,
+        ))
+    _write_table(rows, os.path.join(tables_dir, "internal_vs_gt_occlusion_counts"),
+                 ["sequence", "n_genuine_gt_gaps", "mean_internal_occlusion_events",
+                  "min_internal_occlusion_events", "max_internal_occlusion_events", "inflation_ratio_mean"])
+    manifest.append(dict(name="internal_vs_gt_occlusion_counts",
+                          title="Internal Tracker Bookkeeping vs. GT-Anchored Occlusion Counts (inflation evidence)"))
 
     return manifest
 
@@ -181,6 +254,7 @@ def generate_report(experiments_root: str, name_prefix: str, reports_root: str) 
     pooled = paired_discordant_counts(gap_rows)
     _, _, n01, n10 = pooled.get(("all",), (0, 0, 0, 0))
     p_value = mcnemar_exact_pvalue(n01, n10)
+    log10_p_value = mcnemar_log10_pvalue(n01, n10)
     or_val, or_lo, or_hi = paired_odds_ratio_ci(n01, n10) if (n01 + n10) else (None, None, None)
 
     raw_rec, raw_tot = by_mode.get("raw", (0, 0))
@@ -201,7 +275,15 @@ def generate_report(experiments_root: str, name_prefix: str, reports_root: str) 
         homography_recovery_rate=round(hom_rec / hom_tot, 4) if hom_tot else None,
         n_discordant_pairs=n01 + n10,
         favor_homography=n01, favor_raw=n10,
-        mcnemar_p_value=round(p_value, 6) if p_value is not None else None,
+        # Full precision -- do NOT round this to a fixed decimal count.
+        # At this sample size the true p-value is routinely far below
+        # 1e-6 (e.g. the campaign that prompted this fix: p ~ 1.4e-88),
+        # and round(p, 6) silently collapses any such value to a hard
+        # 0.0, which is not a number a paper can report or a reviewer
+        # can verify. mcnemar_log10_p is the robust, directly citable
+        # form for exactly this situation ("p < 10^-88").
+        mcnemar_p_value=p_value,
+        mcnemar_log10_p_value=round(log10_p_value, 3) if log10_p_value is not None else None,
         odds_ratio=round(or_val, 4) if or_val else None,
         odds_ratio_ci_low=round(or_lo, 4) if or_lo else None,
         odds_ratio_ci_high=round(or_hi, 4) if or_hi else None,
