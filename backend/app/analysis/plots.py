@@ -33,10 +33,13 @@ def _style_ax(ax):
 
 
 def plot_overall_recovery(gap_rows: list) -> plt.Figure:
-    """Headline figure: pooled recovery rate, raw vs homography, with
-    Wilson 95% CI error bars and the exact McNemar p-value annotated."""
+    """Headline figure: pooled recovery rate per mode (raw/affine/
+    homography, whichever are actually present), with Wilson 95% CI
+    error bars. The exact McNemar p-value annotation is specifically
+    raw-vs-homography (the primary ablation this project is built
+    around) regardless of how many other modes are shown as bars."""
     by_mode = group_recovery(gap_rows, lambda r: r["mode"])
-    modes = [m for m in ("raw", "homography") if m in by_mode]
+    modes = sorted(by_mode.keys())
 
     fig, ax = plt.subplots(figsize=(6, 5.5))
     rates, los, his, ns = [], [], [], []
@@ -70,15 +73,16 @@ def plot_overall_recovery(gap_rows: list) -> plt.Figure:
 
 
 def plot_recovery_by_bucket(gap_rows: list) -> plt.Figure:
-    """Grouped bar: recovery rate by occlusion-duration bucket x mode."""
+    """Grouped bar: recovery rate by occlusion-duration bucket x mode
+    (all modes present, not hardcoded to two)."""
     buckets = ["short_1_5", "medium_6_15", "long_16_plus"]
     bucket_labels = ["Short (1-5f)", "Medium (6-15f)", "Long (16f+)"]
-    modes = ["raw", "homography"]
     by_group = group_recovery(gap_rows, lambda r: (r["mode"], r["duration_bucket"]))
+    modes = sorted(set(r["mode"] for r in gap_rows))
 
     fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
     x = np.arange(len(buckets))
-    width = 0.35
+    width = 0.8 / max(1, len(modes))
     for i, m in enumerate(modes):
         rates, errs_lo, errs_hi = [], [], []
         for b in buckets:
@@ -86,7 +90,7 @@ def plot_recovery_by_bucket(gap_rows: list) -> plt.Figure:
             rate = rec / tot if tot else 0
             lo, hi = wilson_ci(rec, tot)
             rates.append(rate); errs_lo.append(rate - lo); errs_hi.append(hi - rate)
-        offset = (i - 0.5) * width
+        offset = (i - (len(modes) - 1) / 2) * width
         ax.bar(x + offset, rates, width, label=m, color=MODE_COLORS.get(m, "#888"),
                yerr=[errs_lo, errs_hi], capsize=4)
     ax.set_xticks(x)
@@ -101,25 +105,26 @@ def plot_recovery_by_bucket(gap_rows: list) -> plt.Figure:
 
 
 def plot_recovery_by_sequence(gap_rows: list) -> plt.Figure:
-    """Horizontal grouped bar of recovery rate per sequence x mode,
-    sorted by sample size so the most-informative sequences are easiest
-    to read."""
+    """Horizontal grouped bar of recovery rate per sequence x mode (all
+    modes present), sorted by sample size so the most-informative
+    sequences are easiest to read."""
     by_group = group_recovery(gap_rows, lambda r: (r["sequence"], r["mode"]))
+    modes = sorted(set(r["mode"] for r in gap_rows))
     sequences = sorted(set(r["sequence"] for r in gap_rows),
                         key=lambda s: -sum(t for (seq, _), (rec, t) in by_group.items() if seq == s))
 
     fig, ax = plt.subplots(figsize=(8, max(3, 0.5 * len(sequences) + 1)))
     y = np.arange(len(sequences))
-    height = 0.35
-    for i, m in enumerate(["raw", "homography"]):
+    height = 0.8 / max(1, len(modes))
+    for i, m in enumerate(modes):
         rates = []
         for seq in sequences:
             rec, tot = by_group.get((seq, m), (0, 0))
             rates.append(rec / tot if tot else 0)
-        offset = (i - 0.5) * height
+        offset = (i - (len(modes) - 1) / 2) * height
         ax.barh(y + offset, rates, height, label=m, color=MODE_COLORS.get(m, "#888"))
     ax.set_yticks(y)
-    ax.set_yticklabels([f"{s}  (n={sum(t for (sq,_),(_,t) in by_group.items() if sq==s)//2})"
+    ax.set_yticklabels([f"{s}  (n={sum(t for (sq,_),(_,t) in by_group.items() if sq==s)//len(modes)})"
                          for s in sequences])
     ax.set_xlabel("Recovery rate")
     ax.xaxis.set_major_formatter(mticker.PercentFormatter(1.0))
@@ -211,7 +216,7 @@ def plot_recovery_vs_duration(gap_rows: list) -> plt.Figure:
     by_group = group_recovery(gap_rows, lambda r: (r["mode"], r["duration"]))
 
     fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
-    for m in ["raw", "homography"]:
+    for m in sorted(set(r["mode"] for r in gap_rows)):
         xs, ys, ns = [], [], []
         for d in durations:
             rec, tot = by_group.get((m, d), (0, 0))
@@ -307,18 +312,19 @@ def plot_recovery_by_category(gap_rows: list) -> plt.Figure:
     that helps small erratic targets more than large steady ones)."""
     by_group = group_recovery(gap_rows, lambda r: (r["category"], r["mode"]))
     categories = sorted(set(r["category"] for r in gap_rows))
+    modes = sorted(set(r["mode"] for r in gap_rows))
 
     fig, ax = plt.subplots(figsize=FIGSIZE_WIDE)
     x = np.arange(len(categories))
-    width = 0.35
-    for i, m in enumerate(["raw", "homography"]):
+    width = 0.8 / max(1, len(modes))
+    for i, m in enumerate(modes):
         rates, errs_lo, errs_hi = [], [], []
         for c in categories:
             rec, tot = by_group.get((c, m), (0, 0))
             rate = rec / tot if tot else 0
             lo, hi = wilson_ci(rec, tot)
             rates.append(rate); errs_lo.append(rate - lo); errs_hi.append(hi - rate)
-        offset = (i - 0.5) * width
+        offset = (i - (len(modes) - 1) / 2) * width
         ax.bar(x + offset, rates, width, label=m, color=MODE_COLORS.get(m, "#888"),
                yerr=[errs_lo, errs_hi], capsize=4)
     ax.set_xticks(x)

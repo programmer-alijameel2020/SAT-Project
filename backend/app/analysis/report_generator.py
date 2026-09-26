@@ -143,14 +143,20 @@ def _build_tables(gap_rows: list, run_rows: list, tables_dir: str) -> list:
     manifest.append(dict(name="latency_summary", title="Latency / Efficiency Summary"))
 
     # 6. Raw paired gap-level records -- full reviewer-reproducibility
-    # export: every genuine gap, both conditions' outcomes on one row,
+    # export: every genuine gap, every mode's outcome on one row,
     # everything needed to independently recompute every statistic in
-    # this report from scratch.
+    # this report from scratch. Column list is built dynamically from
+    # whichever modes actually appear (raw/homography always; affine
+    # only once affine runs exist) -- a fixed two-mode column list broke
+    # the moment a third mode's data showed up.
     paired_records = build_paired_records(gap_rows)
+    modes_present = sorted(set(r["mode"] for r in gap_rows))
+    per_mode_cols = []
+    for m in modes_present:
+        per_mode_cols += [f"{m}_recovered", f"{m}_run_uid"]
     _write_table(paired_records, os.path.join(tables_dir, "paired_gap_records"),
                  ["dataset_source", "category", "sequence", "seed", "gt_id", "start", "end",
-                  "duration", "duration_bucket", "raw_recovered", "homography_recovered",
-                  "raw_run_uid", "homography_run_uid", "concordance"])
+                  "duration", "duration_bucket"] + per_mode_cols + ["concordance"])
     manifest.append(dict(name="paired_gap_records",
                           title="Raw Paired Gap-Level Records (full reproducibility export)"))
 
@@ -260,6 +266,20 @@ def generate_report(experiments_root: str, name_prefix: str, reports_root: str) 
     raw_rec, raw_tot = by_mode.get("raw", (0, 0))
     hom_rec, hom_tot = by_mode.get("homography", (0, 0))
 
+    # Generic per-mode block covering EVERY mode actually present, not
+    # just raw/homography -- this is what surfaces affine's own pooled
+    # recovery rate once affine runs exist, which the raw_*/homography_*
+    # fields below never would (they're kept only for backward
+    # compatibility with anything already reading those exact keys).
+    recovery_by_mode = {}
+    for mode, (rec, tot) in sorted(by_mode.items()):
+        lo, hi = wilson_ci(rec, tot)
+        recovery_by_mode[mode] = dict(
+            recovered=rec, total=tot,
+            recovery_rate=round(rec / tot, 4) if tot else None,
+            ci_low=round(lo, 4), ci_high=round(hi, 4),
+        )
+
     summary = dict(
         report_id=report_id,
         generated_at=datetime.datetime.utcnow().isoformat(),
@@ -269,6 +289,8 @@ def generate_report(experiments_root: str, name_prefix: str, reports_root: str) 
         n_gaps_total=len(gap_rows),
         n_sequences=len(set(r["sequence"] for r in gap_rows)),
         n_categories=len(set(r["category"] for r in gap_rows)),
+        modes_present=sorted(by_mode.keys()),
+        recovery_by_mode=recovery_by_mode,
         raw_recovered=raw_rec, raw_total=raw_tot,
         raw_recovery_rate=round(raw_rec / raw_tot, 4) if raw_tot else None,
         homography_recovered=hom_rec, homography_total=hom_tot,

@@ -77,6 +77,7 @@ def main():
 
     # Get output_dir for each before deleting the DB row (the delete
     # endpoint only returns a message, not the row's data).
+    print(f"\nFetching details for {len(matches)} experiment(s) before deleting...")
     detail_by_uid = {}
     for e in matches:
         try:
@@ -88,16 +89,18 @@ def main():
 
     print()
     n_db_deleted, n_folder_deleted, n_errors = 0, 0, 0
-    for e in matches:
+    for i, e in enumerate(matches, 1):
         uid = e["experiment_uid"]
         detail = detail_by_uid.get(uid)
         output_dir = detail.get("output_dir") if detail else None
+
+        print(f"  [{i}/{len(matches)}] deleting {e['name']} (uid={uid}) ...", flush=True)
 
         try:
             requests.delete(f"{BASE}/api/experiments/{uid}", timeout=15).raise_for_status()
             n_db_deleted += 1
         except Exception as ex:
-            print(f"  ERROR deleting database row for {uid}: {ex}")
+            print(f"      ERROR deleting database row for {uid}: {ex}")
             n_errors += 1
             continue
 
@@ -106,10 +109,10 @@ def main():
                 shutil.rmtree(output_dir)
                 n_folder_deleted += 1
             except OSError as ex:
-                print(f"  ERROR deleting folder {output_dir}: {ex}")
+                print(f"      ERROR deleting folder {output_dir}: {ex}")
                 n_errors += 1
         else:
-            print(f"  NOTE: no on-disk folder found for {uid} (already gone, or never wrote results)")
+            print(f"      NOTE: no on-disk folder found for {uid} (already gone, or never wrote results)")
 
     print(f"\nDone: {n_db_deleted} database record(s) deleted, {n_folder_deleted} folder(s) deleted"
           + (f", {n_errors} error(s)" if n_errors else ""))

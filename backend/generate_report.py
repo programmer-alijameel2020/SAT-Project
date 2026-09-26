@@ -52,10 +52,11 @@ def main():
     print(f"Sequences:           {summary['n_sequences']}")
     print(f"Categories:          {summary['n_categories']}")
     print()
-    print(f"Raw recovery:         {summary['raw_recovered']}/{summary['raw_total']} "
-          f"({summary['raw_recovery_rate']:.1%})" if summary['raw_total'] else "Raw recovery: n/a")
-    print(f"Homography recovery:  {summary['homography_recovered']}/{summary['homography_total']} "
-          f"({summary['homography_recovery_rate']:.1%})" if summary['homography_total'] else "Homography recovery: n/a")
+    print("Pooled recovery by mode:")
+    for mode, stats in summary.get("recovery_by_mode", {}).items():
+        rate_str = f"{stats['recovery_rate']:.1%}" if stats["recovery_rate"] is not None else "n/a"
+        ci_str = f"[{stats['ci_low']:.1%}, {stats['ci_high']:.1%}]" if stats["total"] else ""
+        print(f"  {mode:12s}: {stats['recovered']}/{stats['total']}  ({rate_str})  {ci_str}")
     print()
     print(f"Discordant pairs:     {summary['n_discordant_pairs']} "
           f"({summary['favor_homography']} favor homography, {summary['favor_raw']} favor raw)")
