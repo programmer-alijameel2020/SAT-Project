@@ -7,6 +7,17 @@ measurement H. During occlusion the measurement update is skipped and
 only the predict step runs (Eq. 8.10), which is exactly the mechanism
 that lets the filter "coast" through an occlusion using the compensated
 (platform-motion-free) coordinate frame instead of raw pixels.
+
+FIX (state transport): the filter state lives in the coordinates of the
+most recent frame. For compensated modes, transport(G) must be called once
+per frame with G_{t-1->t} BEFORE predict(): it maps the position through
+the projective transform, the velocity through the transform's Jacobian at
+that position, and the covariance through the corresponding block-Jacobian.
+This is the recursive prediction form of the formulation (spec Sec. 7.3):
+over an occlusion of k frames the accumulated platform motion is carried by
+k successive transports, instead of only the last frame's transform as in
+the previous implementation (which predicted in stale coordinates and
+reprojected with a single step).
 """
 from __future__ import annotations
 
@@ -45,6 +56,27 @@ class CompensatedKalmanFilter:
         self.x = self.F @ self.x
         self.P = self.F @ self.P @ self.F.T + self.Q
         return self.x[:2].copy(), self.P.copy()
+
+    @staticmethod
+    def projective_jacobian(G: np.ndarray, p: np.ndarray) -> np.ndarray:
+        """d pi(G [p;1]) / dp  (2x2). For an affine G this is its linear part."""
+        y = G @ np.array([p[0], p[1], 1.0])
+        w = y[2]
+        u = y[:2] / w
+        return (G[:2, :2] - np.outer(u, G[2, :2])) / w
+
+    def transport(self, G: np.ndarray):
+        """Map state and covariance from frame t-1 coordinates into frame t."""
+        G = np.asarray(G, dtype=np.float64)
+        p = self.x[:2].copy()
+        J = self.projective_jacobian(G, p)
+        y = G @ np.array([p[0], p[1], 1.0])
+        self.x[:2] = y[:2] / y[2]
+        self.x[2:] = J @ self.x[2:]
+        T = np.zeros((4, 4))
+        T[:2, :2] = J
+        T[2:, 2:] = J
+        self.P = T @ self.P @ T.T
 
     def update(self, z_xy: np.ndarray):
         y = z_xy - self.Hm @ self.x

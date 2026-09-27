@@ -26,6 +26,12 @@ independent draws of the injected-motion realization, which is what
 turns a handful of anecdotal comparisons into an actual sample large
 enough for a statistical test (see aggregate_results.py).
 
+FINAL CAMPAIGN: default modes are the six rows of representation.MODE_SPECS
+and the default name prefix is "final_". The old "batch_" prefix is refused
+unless --allow-legacy-prefix is given: resumability skips any COMPLETED run
+with the same name, so reusing "batch_" would silently mix pre-fix results
+into the final campaign.
+
 Usage:
     python run_batch_experiments.py --sequences car_001 car_014 plane_040 --seeds 1 2 3 4 5
     python run_batch_experiments.py --sequences car_001 --seeds 42 --modes raw homography --max-frames 260
@@ -63,7 +69,10 @@ def fetch_existing_by_name(prefix):
     return out
 
 
-def poll_until_done(uid, poll_interval=2.0, timeout=600):
+FINAL_MODES = ["raw_kf", "raw", "gmc", "affine", "homography", "oracle"]
+
+
+def poll_until_done(uid, poll_interval=2.0, timeout=3600):
     start_time = time.time()
     while True:
         r = requests.get(f"{BASE}/api/experiments/{uid}", timeout=30)
@@ -115,7 +124,7 @@ def main():
     ap.add_argument("--sequences", nargs="+", required=True,
                      help="Sequence names as reported by 'Scan for sequences', e.g. car_001 plane_040")
     ap.add_argument("--seeds", nargs="+", type=int, default=[42])
-    ap.add_argument("--modes", nargs="+", default=["raw", "homography"])
+    ap.add_argument("--modes", nargs="+", default=FINAL_MODES)
     ap.add_argument("--max-frames", type=int, default=None,
                      help="Cap frames processed per run. DEFAULT (omit this flag): use each "
                           "sequence's own full length -- required for correctness on longer "
@@ -126,8 +135,18 @@ def main():
     ap.add_argument("--dataset-source", choices=["VISO", "SDM-Car"], default="VISO")
     ap.add_argument("--dataset-root", default=None,
                      help="Defaults to the standard path for --dataset-source if omitted.")
-    ap.add_argument("--name-prefix", default="batch_")
+    ap.add_argument("--name-prefix", default="final_")
+    ap.add_argument("--allow-legacy-prefix", action="store_true",
+                     help="Permit the pre-fix 'batch_' prefix (NOT for the final campaign).")
     args = ap.parse_args()
+    if args.name_prefix == "batch_" and not args.allow_legacy_prefix:
+        print("Refusing prefix 'batch_': completed pre-fix runs under that prefix would be "
+              "skipped and silently reused. Use the default 'final_' (or another new prefix).")
+        sys.exit(2)
+    unknown = [m for m in args.modes if m not in FINAL_MODES]
+    if unknown:
+        print(f"Unknown mode(s) {unknown}; valid: {FINAL_MODES}")
+        sys.exit(2)
     dataset_root = args.dataset_root or DEFAULT_DATASET_ROOTS[args.dataset_source]
 
     try:

@@ -1,8 +1,8 @@
 """
 Cluster-robust statistics for the occlusion-recovery study (any number of modes).
 
-Modes are detected from columns named <mode>_recovered. Comparisons run:
-every mode vs. raw, plus homography vs. affine when both exist.
+Modes are detected from columns named <mode>_recovered. Each comparison in
+`wanted` (see main) runs when both of its modes are present.
 
 Why this exists
 ---------------
@@ -115,10 +115,21 @@ def main():
     subsets += [(f"bucket={k}", x) for k, x in d.groupby("duration_bucket")]
     subsets.append(("ALL_excl_ship_045", d[d["sequence"] != "ship_045"]))
 
-    ms = modes(d)
-    pairs = [("raw", m) for m in ms if m != "raw"]
-    if "affine" in ms and "homography" in ms:
-        pairs.append(("affine", "homography"))
+    ms = set(modes(d))
+    # (baseline a, variant b): each isolates one factor of the design.
+    wanted = [
+        ("raw", "homography"),      # headline: compensation (+refit) vs raw refit
+        ("raw", "affine"),
+        ("raw_kf", "raw"),          # windowed refit, no compensation
+        ("raw_kf", "gmc"),          # compensation, no refit (state warping)
+        ("gmc", "affine"),          # KEY: refit on compensated history vs state warping alone
+        ("raw_kf", "affine"),       # both components together
+        ("affine", "homography"),   # transform model order
+        ("homography", "oracle"),   # estimation error vs perfect transform
+    ]
+    pairs = [(a_, b_) for a_, b_ in wanted if a_ in ms and b_ in ms]
+    if not pairs:
+        raise SystemExit(f"No comparable mode pairs among {sorted(ms)}")
 
     rows = []
     for (ma, mb) in pairs:
