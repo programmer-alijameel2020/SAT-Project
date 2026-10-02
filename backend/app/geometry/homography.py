@@ -1,11 +1,22 @@
 """
-Robust platform-motion (homography) estimation.
+Robust platform-motion estimation (homography or affine primary model).
 
 Implements spec Section 3 (Estimating platform motion):
  - background feature correspondences (ORB, target-region rejection)
  - robust homography estimation (RANSAC + optional Huber refinement)
  - inlier set / quality statistics (r_H, eps_H, q_H)
  - validity gate + affine/identity fallback (Eq. 3.10 - 3.11)
+
+Primary model is selected at construction time via `model`:
+  model="homography" : RANSAC homography -> Huber refine -> gate;
+                       on gate failure: 4-DOF similarity fallback
+                       (cv2.estimateAffinePartial2D), then identity.
+                       THIS PATH IS UNCHANGED from the version used for the
+                       reported raw/homography campaign.
+  model="affine"     : RANSAC full 6-DOF affine (cv2.estimateAffine2D) ->
+                       Huber refine (6 params) -> SAME gate (m0, r0, eps0);
+                       on gate failure: identity. Never falls back to, or
+                       reuses, a homography estimate.
 """
 from __future__ import annotations
 
@@ -26,6 +37,7 @@ class HomographyResult:
     reproj_error: float
     quality_score: float          # q_H in [0,1], sigmoid-based (Eq 3.9)
     gate_passed: bool
+    model: str = "homography"     # primary model this estimator was configured with
 
 
 class PlatformMotionEstimator:
@@ -45,7 +57,12 @@ class PlatformMotionEstimator:
         huber_delta: float = 2.0,
         quality_alpha_r: float = 6.0,
         quality_alpha_eps: float = 0.6,
+        model: str = "homography",
     ):
+        if model not in ("homography", "affine"):
+            raise ValueError(f"PlatformMotionEstimator: unknown model {model!r} "
+                             "(expected 'homography' or 'affine')")
+        self.model = model
         self.m0 = min_inliers
         self.r0 = min_inlier_ratio
         self.eps0 = max_reproj_error
@@ -101,8 +118,9 @@ class PlatformMotionEstimator:
         frame_t1: np.ndarray,
         target_boxes_t: Optional[list] = None,
     ) -> HomographyResult:
-        """Estimate G_{t->t+1}. Falls back to affine, then identity, per the
-        validity gate in Eq. 3.10-3.11."""
+        """Estimate G_{t->t+1} with the configured primary model.
+        homography: falls back to similarity, then identity (Eq. 3.10-3.11).
+        affine:     falls back to identity only."""
         gray_t = cv2.cvtColor(frame_t, cv2.COLOR_BGR2GRAY) if frame_t.ndim == 3 else frame_t
         gray_t1 = cv2.cvtColor(frame_t1, cv2.COLOR_BGR2GRAY) if frame_t1.ndim == 3 else frame_t1
 
@@ -110,7 +128,7 @@ class PlatformMotionEstimator:
         kp2, des2 = self.orb.detectAndCompute(gray_t1, None)
 
         if des1 is None or des2 is None or len(kp1) < self.m0 or len(kp2) < self.m0:
-            return HomographyResult(np.eye(3), "identity", 0, 0, 0.0, 0.0, 0.0, False)
+            return self._tag(HomographyResult(np.eye(3), "identity", 0, 0, 0.0, 0.0, 0.0, False))
 
         keep1 = set(self._reject_target_regions(kp1, target_boxes_t))
         matches = self.bf.knnMatch(des1, des2, k=2)
@@ -126,10 +144,22 @@ class PlatformMotionEstimator:
 
         n_matches = len(good)
         if n_matches < self.m0:
-            return HomographyResult(np.eye(3), "identity", n_matches, 0, 0.0, 0.0, 0.0, False)
+            return self._tag(HomographyResult(np.eye(3), "identity", n_matches, 0, 0.0, 0.0, 0.0, False))
 
         src = np.float32([kp1[m.queryIdx].pt for m in good])
         dst = np.float32([kp2[m.trainIdx].pt for m in good])
+
+        if self.model == "affine":
+            return self._tag(self._estimate_affine_primary(src, dst, n_matches))
+        return self._tag(self._estimate_homography_primary(src, dst, n_matches))
+
+    # ------------------------------------------------------------------ #
+    def _tag(self, res: HomographyResult) -> HomographyResult:
+        res.model = self.model
+        return res
+
+    def _estimate_homography_primary(self, src, dst, n_matches) -> HomographyResult:
+        """Original homography path -- logic unchanged."""
 
         H0, inlier_mask = cv2.findHomography(
             src, dst, cv2.RANSAC, self.ransac_thresh, maxIters=2000, confidence=0.995
@@ -163,8 +193,62 @@ class PlatformMotionEstimator:
                                      inlier_ratio, reproj_error, float(quality), True)
         return self._affine_fallback(src, dst, n_matches)
 
+    # ------------------------------------------------------------------ #
+    def _huber_refine_affine(self, A0: np.ndarray, src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+        """Huber-loss refinement of a 2x3 affine on inliers (6 parameters),
+        mirroring _huber_refine for the homography path."""
+        from scipy.optimize import least_squares
+
+        def residuals(a):
+            A = a.reshape(2, 3)
+            return (src @ A[:, :2].T + A[:, 2] - dst).ravel()
+
+        try:
+            res = least_squares(residuals, A0.ravel().astype(np.float64), loss="huber",
+                                f_scale=self.huber_delta, max_nfev=200)
+            return res.x.reshape(2, 3)
+        except Exception:
+            return A0
+
+    def _estimate_affine_primary(self, src, dst, n_matches) -> HomographyResult:
+        """Full 6-DOF affine as the PRIMARY model, gated by the same
+        (m0, r0, eps0) criteria as the homography path. Identity on failure."""
+        A0, inlier_mask = cv2.estimateAffine2D(
+            src, dst, method=cv2.RANSAC, ransacReprojThreshold=self.ransac_thresh,
+            maxIters=2000, confidence=0.995,
+        )
+        if A0 is None or inlier_mask is None:
+            return HomographyResult(np.eye(3), "identity", n_matches, 0, 0.0, 0.0, 0.0, False)
+        inlier_mask = inlier_mask.ravel().astype(bool)
+        if int(inlier_mask.sum()) < self.m0:
+            return HomographyResult(np.eye(3), "identity", n_matches, int(inlier_mask.sum()),
+                                     0.0, 0.0, 0.0, False)
+
+        src64, dst64 = src.astype(np.float64), dst.astype(np.float64)
+        A = self._huber_refine_affine(A0, src64[inlier_mask], dst64[inlier_mask])
+
+        proj = src64 @ A[:, :2].T + A[:, 2]
+        err = np.linalg.norm(proj - dst64, axis=1)
+        inlier_mask2 = err <= self.ransac_thresh
+        n_inliers2 = int(inlier_mask2.sum())
+        inlier_ratio = n_inliers2 / max(1, n_matches)
+        reproj_error = float(np.median(err[inlier_mask2])) if n_inliers2 > 0 else float(np.median(err))
+
+        quality = 1.0 / (1.0 + np.exp(-(self.alpha_r * (inlier_ratio - self.r0)
+                                         - self.alpha_eps * (reproj_error - self.eps0))))
+        gate = (n_inliers2 >= self.m0) and (inlier_ratio >= self.r0) and (reproj_error <= self.eps0)
+
+        if not gate:
+            return HomographyResult(np.eye(3), "identity", n_matches, n_inliers2,
+                                     inlier_ratio, reproj_error, 0.0, False)
+        G = np.eye(3)
+        G[:2, :] = A
+        return HomographyResult(G, "affine", n_matches, n_inliers2,
+                                 inlier_ratio, reproj_error, float(quality), True)
+
     def _affine_fallback(self, src, dst, n_matches) -> HomographyResult:
-        """Affine fallback per Eq. 2.8 / 3.11."""
+        """Fallback for the HOMOGRAPHY path only (Eq. 3.11). Note: this is a
+        4-DOF similarity (estimateAffinePartial2D), not a full affine."""
         A, inlier_mask = cv2.estimateAffinePartial2D(
             src, dst, method=cv2.RANSAC, ransacReprojThreshold=self.ransac_thresh
         )

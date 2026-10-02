@@ -1,0 +1,40 @@
+{
+  "saved_at": "2026-10-02T11:21:56.322707+00:00",
+  "sequences": [
+    "car_001",
+    "car_003",
+    "car_008",
+    "car_010",
+    "car_012",
+    "car_013",
+    "car_014",
+    "car_016",
+    "car_020",
+    "car_021",
+    "car_022",
+    "car_024",
+    "car_025",
+    "plane_039",
+    "plane_040",
+    "plane_041",
+    "plane_042",
+    "plane_044",
+    "ship_045",
+    "train_046"
+  ],
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "modes": [
+    "raw",
+    "homography"
+  ],
+  "max_frames": null,
+  "dataset_source": "VISO",
+  "dataset_root": "D:\\artificial_intelligence\\Sat-project\\datasets\\VISO\\mot\\mot",
+  "name_prefix": "batch_"
+}

@@ -10,19 +10,36 @@ statement"): a tracking-by-detection loop in which
   5. Hungarian assignment with Mahalanobis/IoU gating matches detections,
   6. occlusion age / confidence governs reactivation and track death.
 
-`trajectory_mode` ('raw' | 'affine' | 'homography') switches only the
-representation used to build predictor inputs -- everything else in the
-loop is identical, which is what makes the ablation in Section 12 causal.
+`trajectory_mode` selects one row of representation.MODE_SPECS
+(raw_kf | raw | gmc | affine | homography | oracle). A mode only decides
+(a) which transform fills the chain, (b) whether the Kalman state is
+transported through G_{t-1->t} every frame, and (c) whether the Kalman
+velocity is replaced by the robust windowed refit. Detector, association,
+gates, noise parameters and track management are identical across modes.
+
+Fixes relative to the version used for the first campaign:
+  1. affine mode builds its chain from PRIMARY 6-DOF affine estimates
+     (previously it silently reused the homography chain);
+  2. TransformChain indexing (decomposition.py) no longer lags one frame;
+  3. the Kalman state is transported into each new frame (recursive form of
+     Eq. 7.4, spec Sec. 7.3) instead of predicting in stale coordinates and
+     reprojecting with a single step, so platform motion accumulated during
+     an occlusion is carried by the forecast;
+  4. no silent fallback to raw history on representation errors;
+  5. fallback / platform-motion statistics are measured against the
+     primary model; the full transform is logged per frame;
+  6. OpenCV RNG seeded at construction for run-to-run determinism.
 """
 from __future__ import annotations
 
+import cv2
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 
 from ..geometry.homography import PlatformMotionEstimator, HomographyResult, transform_point
 from ..geometry.decomposition import TransformChain
-from ..geometry.representation import represent_history, reproject_forecast, Mode
+from ..geometry.representation import represent_history, Mode, spec
 from ..geometry.residual_predictor import robust_fit, confidence_weights
 from ..geometry.kalman import CompensatedKalmanFilter
 from ..detection.simple_detector import Detection
@@ -56,8 +73,11 @@ class MotionGroundedTracker:
         max_age_before_death: int = None,
         predictor_model: str = "constant_velocity",
         homography_kwargs: dict = None,
+        opencv_seed: int = 0,
     ):
+        self.spec = spec(trajectory_mode)          # raises on unknown modes
         self.mode = trajectory_mode
+        cv2.setRNGSeed(int(opencv_seed))
         self.L = window_length
         self.kmax = kmax_occlusion
         self.min_hits = min_hits_to_confirm
@@ -72,8 +92,17 @@ class MotionGroundedTracker:
         self.max_age = max_age_before_death if max_age_before_death is not None else kmax_occlusion
         self.predictor_model = predictor_model
 
-        self.estimator = PlatformMotionEstimator(**(homography_kwargs or {}))
+        # Transform source follows the mode table. Non-compensating modes keep
+        # the homography estimator only to log platform motion (never consumed).
+        # The oracle mode takes G_{t-1->t} from set_oracle_transform() instead.
+        self.estimator = None
+        if self.spec.estimator != "oracle":
+            kwargs = dict(homography_kwargs or {})
+            kwargs.pop("model", None)
+            self.estimator = PlatformMotionEstimator(**kwargs, model=self.spec.estimator)
+        self._oracle_G: Optional[np.ndarray] = None
         self.chain = TransformChain()
+        self.chain.model = self.spec.estimator
 
         self.tracks: Dict[int, Track] = {}
         self._next_id = 1
@@ -86,6 +115,11 @@ class MotionGroundedTracker:
         self.total_time_ms: List[float] = []
 
     # ------------------------------------------------------------------ #
+    def set_oracle_transform(self, G_prev_to_t: np.ndarray) -> None:
+        """Oracle mode only: supply the TRUE platform transform G_{t-1->t}
+        (from the motion injector) before calling step() for frame t >= 1."""
+        self._oracle_G = np.asarray(G_prev_to_t, dtype=np.float64)
+
     def step(self, frame_bgr: np.ndarray, prev_frame_bgr: Optional[np.ndarray],
               detections: List[Detection]) -> dict:
         import time
@@ -95,42 +129,51 @@ class MotionGroundedTracker:
 
         # 1) platform-motion estimation ---------------------------------
         tg0 = time.perf_counter()
-        if prev_frame_bgr is not None:
+        if prev_frame_bgr is None:
+            hres = HomographyResult(np.eye(3), "identity", 0, 0, 0.0, 0.0, 1.0, True,
+                                    model=self.spec.estimator)
+        elif self.spec.estimator == "oracle":
+            if self._oracle_G is None:
+                raise RuntimeError(f"oracle mode: no transform supplied for frame {t}")
+            hres = HomographyResult(self._oracle_G, "oracle", 0, 0, 1.0, 0.0, 1.0, True,
+                                    model="oracle")
+        else:
             boxes = [tr.box.tolist() for tr in self.tracks.values() if tr.box is not None]
             hres: HomographyResult = self.estimator.estimate(prev_frame_bgr, frame_bgr, boxes)
-        else:
-            hres = HomographyResult(np.eye(3), "identity", 0, 0, 0.0, 0.0, 1.0, True)
+        self._oracle_G = None
         self.chain.push(hres.H)
+        if len(self.chain) != t + 1:
+            raise RuntimeError(f"TransformChain out of sync: {len(self.chain)} frames at t={t}")
 
         # Translation magnitude of the platform transform, measured at the
-        # image center -- this is what was missing from the log. Fit
-        # quality (inliers/reprojection error) tells you how CONFIDENTLY
-        # the homography was estimated; it says nothing about how MUCH
-        # the platform actually moved. A perfectly static camera produces
-        # a high-confidence near-identity homography too -- so without
-        # this number, "0.38% fallback rate" can't distinguish "lots of
-        # platform motion, compensated well" from "the platform barely
-        # moves in this clip at all."
+        # image center. Fit quality says how CONFIDENTLY the transform was
+        # estimated, not how MUCH the platform moved.
         img_h, img_w = frame_bgr.shape[:2]
         center = np.array([img_w / 2.0, img_h / 2.0])
         displaced = transform_point(hres.H, center)
         translation_px = float(np.linalg.norm(displaced - center))
 
         self.homography_log.append(dict(
-            frame=t, mode=hres.mode, n_matches=hres.n_matches, n_inliers=hres.n_inliers,
+            frame=t, model=hres.model, mode=hres.mode, gate_passed=bool(hres.gate_passed),
+            n_matches=hres.n_matches, n_inliers=hres.n_inliers,
             inlier_ratio=round(hres.inlier_ratio, 4), reproj_error=round(hres.reproj_error, 4),
             quality=round(hres.quality_score, 4), translation_px=round(translation_px, 3),
+            H=[round(float(v), 8) for v in np.asarray(hres.H).ravel()],
         ))
         self.geometry_time_ms.append((time.perf_counter() - tg0) * 1000)
 
         # 2) predict every existing track forward ------------------------
+        # Compensating modes first transport each state into frame-t
+        # coordinates (position through G, velocity/covariance through its
+        # Jacobian), then predict. The prediction is already in frame-t
+        # image coordinates, so no reprojection is needed.
+        G_step = self.chain.G(t - 1, t) if (self.spec.compensate and t >= 1) else None
         predicted = []
         for tid, tr in self.tracks.items():
+            if G_step is not None:
+                tr.kf.transport(G_step)
             q_pred, P_pred = tr.kf.predict()
-            if self.mode == "raw":
-                p_img = q_pred
-            else:
-                p_img = reproject_forecast(q_pred, t - 1, t, self.mode, self.chain)
+            p_img = q_pred
             S = tr.kf.Hm @ P_pred @ tr.kf.Hm.T + tr.kf.R
             predicted.append((tid, p_img, tr.box if tr.box is not None
                                else np.array([p_img[0]-3, p_img[1]-3, 6, 6]), S, tr.occlusion_age))
@@ -175,14 +218,8 @@ class MotionGroundedTracker:
             tr.max_occlusion_seen = max(tr.max_occlusion_seen, tr.occlusion_age)
 
             if not tr.confirmed:
-                # Tentative track (never reached min_hits_to_confirm) that
-                # went unmatched even once: almost certainly a spurious
-                # detector blob, not a real occluded target. Kill it
-                # immediately rather than letting it occupy the K_max
-                # occlusion grace period -- this is what actually bounds
-                # active-track count when the placeholder detector is noisy,
-                # since real occlusion recovery only applies to tracks
-                # that were genuinely established first.
+                # Tentative track that went unmatched even once: almost
+                # certainly a spurious detector blob. Kill it immediately.
                 dead.append(tid)
             elif tr.occlusion_age > self.max_age:
                 dead.append(tid)
@@ -208,16 +245,15 @@ class MotionGroundedTracker:
             self.tracks[tid] = tr
             new_ids.append(tid)
 
-        # 6) refit residual predictor state for confirmed, visible tracks --
-        for tid, tr in self.tracks.items():
+        # 6) windowed robust refit of the velocity (refit modes only) -------
+        for tid, tr in (self.tracks.items() if self.spec.refit else []):
             if len(tr.history) < 2:
                 continue
             hist = [(k, p) for (k, p, c) in tr.history]
             confs = np.array([c for (_, _, c) in tr.history])
-            try:
-                q_hist = represent_history(hist, t, self.mode, self.chain)
-            except Exception:
-                q_hist = np.array([p for _, p in hist])
+            # No silent fallback: a failure here would otherwise quietly turn
+            # a compensated run into a raw run and corrupt the ablation.
+            q_hist = represent_history(hist, t, self.mode, self.chain)
             taus = np.array([k - t for k, _ in hist], dtype=np.float64)
             w = confidence_weights(
                 det_conf=confs,
@@ -258,11 +294,14 @@ class MotionGroundedTracker:
         recovery_rate = len(recovered) / n_events if n_events else None
         mean_geom_ms = float(np.mean(self.geometry_time_ms)) if self.geometry_time_ms else 0.0
         mean_total_ms = float(np.mean(self.total_time_ms)) if self.total_time_ms else 0.0
+        primary = self.spec.estimator
+        # Fallback = any frame whose transform did not come from the primary
+        # model (for homography runs this is identical to the old definition).
         fallback_rate = (
-            sum(1 for h in self.homography_log if h["mode"] != "homography")
+            sum(1 for h in self.homography_log if h["mode"] != primary)
             / max(1, len(self.homography_log))
         )
-        translations = [h["translation_px"] for h in self.homography_log if h["mode"] == "homography"]
+        translations = [h["translation_px"] for h in self.homography_log if h["mode"] == primary]
         platform_motion_px = dict(
             mean=round(float(np.mean(translations)), 3) if translations else None,
             median=round(float(np.median(translations)), 3) if translations else None,
@@ -272,6 +311,7 @@ class MotionGroundedTracker:
         )
         return dict(
             trajectory_mode=self.mode,
+            estimator_model=primary,
             n_frames=self.frame_idx + 1,
             platform_motion_px=platform_motion_px,
             n_occlusion_events=n_events,

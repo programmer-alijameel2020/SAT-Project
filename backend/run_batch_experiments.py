@@ -26,6 +26,12 @@ independent draws of the injected-motion realization, which is what
 turns a handful of anecdotal comparisons into an actual sample large
 enough for a statistical test (see aggregate_results.py).
 
+FINAL CAMPAIGN: default modes are the six rows of representation.MODE_SPECS
+and the default name prefix is "final_". The old "batch_" prefix is refused
+unless --allow-legacy-prefix is given: resumability skips any COMPLETED run
+with the same name, so reusing "batch_" would silently mix pre-fix results
+into the final campaign.
+
 Usage:
     python run_batch_experiments.py --sequences car_001 car_014 plane_040 --seeds 1 2 3 4 5
     python run_batch_experiments.py --sequences car_001 --seeds 42 --modes raw homography --max-frames 260
@@ -34,9 +40,6 @@ If interrupted (Ctrl+C) at any point, just run the exact same command
 again -- already-completed runs are skipped automatically.
 """
 import argparse
-import datetime
-import json
-import os
 import time
 import sys
 
@@ -66,7 +69,10 @@ def fetch_existing_by_name(prefix):
     return out
 
 
-def poll_until_done(uid, poll_interval=2.0, timeout=600):
+FINAL_MODES = ["raw_kf", "raw", "gmc", "affine", "homography", "oracle"]
+
+
+def poll_until_done(uid, poll_interval=2.0, timeout=3600):
     start_time = time.time()
     while True:
         r = requests.get(f"{BASE}/api/experiments/{uid}", timeout=30)
@@ -113,16 +119,12 @@ def submit_fresh(name, dataset_source, dataset_root, sequence_name, mode, seed, 
     return uid
 
 
-CAMPAIGN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_campaign.json")
-
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sequences", nargs="+", default=None,
-                     help="Sequence names as reported by 'Scan for sequences', e.g. car_001 plane_040. "
-                          "Not required if --resume-last is given.")
+    ap.add_argument("--sequences", nargs="+", required=True,
+                     help="Sequence names as reported by 'Scan for sequences', e.g. car_001 plane_040")
     ap.add_argument("--seeds", nargs="+", type=int, default=[42])
-    ap.add_argument("--modes", nargs="+", default=["raw", "homography"])
+    ap.add_argument("--modes", nargs="+", default=FINAL_MODES)
     ap.add_argument("--max-frames", type=int, default=None,
                      help="Cap frames processed per run. DEFAULT (omit this flag): use each "
                           "sequence's own full length -- required for correctness on longer "
@@ -133,53 +135,19 @@ def main():
     ap.add_argument("--dataset-source", choices=["VISO", "SDM-Car"], default="VISO")
     ap.add_argument("--dataset-root", default=None,
                      help="Defaults to the standard path for --dataset-source if omitted.")
-    ap.add_argument("--name-prefix", default="batch_")
-    ap.add_argument("--resume-last", action="store_true",
-                     help="Ignore every other argument above and rerun the exact campaign "
-                          "spec saved from the last invocation (see .last_campaign.json next "
-                          "to this script). This exists specifically so an interrupted campaign "
-                          "-- power cut, terminal closed, anything -- can be resumed with "
-                          "nothing to remember or retype: just 'python run_batch_experiments.py "
-                          "--resume-last'. Already-completed runs are still skipped as always; "
-                          "this only saves you from having to recall the original command.")
+    ap.add_argument("--name-prefix", default="final_")
+    ap.add_argument("--allow-legacy-prefix", action="store_true",
+                     help="Permit the pre-fix 'batch_' prefix (NOT for the final campaign).")
     args = ap.parse_args()
-
-    if args.resume_last:
-        if not os.path.isfile(CAMPAIGN_FILE):
-            print(f"No saved campaign found at {CAMPAIGN_FILE} -- nothing to resume. "
-                  f"Run with --sequences (and the rest) at least once first; "
-                  f"the spec gets saved automatically.")
-            sys.exit(1)
-        with open(CAMPAIGN_FILE) as f:
-            saved = json.load(f)
-        print(f"Resuming saved campaign from {CAMPAIGN_FILE} "
-              f"(originally started {saved.get('saved_at', 'unknown time')}):")
-        print(f"  dataset_source={saved['dataset_source']}  sequences={saved['sequences']}  "
-              f"seeds={saved['seeds']}  modes={saved['modes']}\n")
-        args.sequences = saved["sequences"]
-        args.seeds = saved["seeds"]
-        args.modes = saved["modes"]
-        args.max_frames = saved["max_frames"]
-        args.dataset_source = saved["dataset_source"]
-        args.dataset_root = saved["dataset_root"]
-        args.name_prefix = saved["name_prefix"]
-    else:
-        if not args.sequences:
-            ap.error("--sequences is required unless --resume-last is given")
-
+    if args.name_prefix == "batch_" and not args.allow_legacy_prefix:
+        print("Refusing prefix 'batch_': completed pre-fix runs under that prefix would be "
+              "skipped and silently reused. Use the default 'final_' (or another new prefix).")
+        sys.exit(2)
+    unknown = [m for m in args.modes if m not in FINAL_MODES]
+    if unknown:
+        print(f"Unknown mode(s) {unknown}; valid: {FINAL_MODES}")
+        sys.exit(2)
     dataset_root = args.dataset_root or DEFAULT_DATASET_ROOTS[args.dataset_source]
-
-    if not args.resume_last:
-        # Save the campaign spec every time a fresh one is launched, so
-        # a later --resume-last always picks up the MOST RECENT campaign,
-        # not a stale one from days ago.
-        with open(CAMPAIGN_FILE, "w") as f:
-            json.dump(dict(
-                saved_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                sequences=args.sequences, seeds=args.seeds, modes=args.modes,
-                max_frames=args.max_frames, dataset_source=args.dataset_source,
-                dataset_root=dataset_root, name_prefix=args.name_prefix,
-            ), f, indent=2)
 
     try:
         requests.get(f"{BASE}/api/health", timeout=5).raise_for_status()
