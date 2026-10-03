@@ -26,12 +26,6 @@ independent draws of the injected-motion realization, which is what
 turns a handful of anecdotal comparisons into an actual sample large
 enough for a statistical test (see aggregate_results.py).
 
-FINAL CAMPAIGN: default modes are the six rows of representation.MODE_SPECS
-and the default name prefix is "final_". The old "batch_" prefix is refused
-unless --allow-legacy-prefix is given: resumability skips any COMPLETED run
-with the same name, so reusing "batch_" would silently mix pre-fix results
-into the final campaign.
-
 Usage:
     python run_batch_experiments.py --sequences car_001 car_014 plane_040 --seeds 1 2 3 4 5
     python run_batch_experiments.py --sequences car_001 --seeds 42 --modes raw homography --max-frames 260
@@ -40,6 +34,9 @@ If interrupted (Ctrl+C) at any point, just run the exact same command
 again -- already-completed runs are skipped automatically.
 """
 import argparse
+import datetime
+import json
+import os
 import time
 import sys
 
@@ -69,10 +66,76 @@ def fetch_existing_by_name(prefix):
     return out
 
 
-FINAL_MODES = ["raw_kf", "raw", "gmc", "affine", "homography", "oracle"]
+STALE_CHECK_WAIT = 15  # seconds between the two liveness-check reads
 
 
-def poll_until_done(uid, poll_interval=2.0, timeout=3600):
+def _last_event_line(uid):
+    """Reads the last line of an experiment's own events.jsonl directly
+    off disk (same file the live dashboard tails), via its output_dir
+    from the API. Returns None if the experiment, its folder, or its
+    events file doesn't exist yet, or exists but is still empty."""
+    try:
+        detail = requests.get(f"{BASE}/api/experiments/{uid}", timeout=15).json()
+    except Exception:
+        return None
+    output_dir = detail.get("output_dir")
+    if not output_dir:
+        return None
+    events_path = os.path.join(output_dir, "events.jsonl")
+    if not os.path.isfile(events_path):
+        return None
+    try:
+        with open(events_path, "r") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    return lines[-1].strip() if lines else None
+
+
+def is_experiment_alive(uid, wait_seconds=STALE_CHECK_WAIT):
+    """
+    The automated version of the "check events.jsonl twice, ~10 seconds
+    apart" diagnostic this project has done by hand many times: reads
+    the experiment's last logged event, waits, reads again. If nothing
+    changed, it's not making progress -- whether because it's frozen
+    mid-run or because it's a zombie whose process died before writing
+    anything at all (an empty/missing events file counts as "no
+    progress" too, which is exactly the signature of a server restart
+    or power loss killing an experiment moments after it started).
+    `wait_seconds` is deliberately generous (15s default) so a
+    genuinely just-started live experiment has time to log its first
+    real event before being judged -- a shorter window risks a false
+    positive on something that's actually fine.
+    """
+    first = _last_event_line(uid)
+    time.sleep(wait_seconds)
+    second = _last_event_line(uid)
+    return first != second
+
+
+def delete_stale_experiment(uid):
+    """Same two-sided cleanup as reset_experiments.py (database row +
+    on-disk folder) for exactly one uid, used when this script itself
+    determines an experiment is a zombie rather than asking the user to
+    run reset_experiments.py by hand."""
+    try:
+        detail = requests.get(f"{BASE}/api/experiments/{uid}", timeout=15).json()
+    except Exception:
+        detail = {}
+    output_dir = detail.get("output_dir")
+    try:
+        requests.delete(f"{BASE}/api/experiments/{uid}", timeout=15).raise_for_status()
+    except Exception as e:
+        print(f"    WARNING: couldn't delete stale database row for {uid}: {e}")
+    if output_dir and os.path.isdir(output_dir):
+        import shutil
+        try:
+            shutil.rmtree(output_dir)
+        except OSError as e:
+            print(f"    WARNING: couldn't delete stale folder {output_dir}: {e}")
+
+
+def poll_until_done(uid, poll_interval=2.0, timeout=600):
     start_time = time.time()
     while True:
         r = requests.get(f"{BASE}/api/experiments/{uid}", timeout=30)
@@ -119,12 +182,16 @@ def submit_fresh(name, dataset_source, dataset_root, sequence_name, mode, seed, 
     return uid
 
 
+CAMPAIGN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_campaign.json")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sequences", nargs="+", required=True,
-                     help="Sequence names as reported by 'Scan for sequences', e.g. car_001 plane_040")
+    ap.add_argument("--sequences", nargs="+", default=None,
+                     help="Sequence names as reported by 'Scan for sequences', e.g. car_001 plane_040. "
+                          "Not required if --resume-last is given.")
     ap.add_argument("--seeds", nargs="+", type=int, default=[42])
-    ap.add_argument("--modes", nargs="+", default=FINAL_MODES)
+    ap.add_argument("--modes", nargs="+", default=["raw", "homography"])
     ap.add_argument("--max-frames", type=int, default=None,
                      help="Cap frames processed per run. DEFAULT (omit this flag): use each "
                           "sequence's own full length -- required for correctness on longer "
@@ -135,19 +202,53 @@ def main():
     ap.add_argument("--dataset-source", choices=["VISO", "SDM-Car"], default="VISO")
     ap.add_argument("--dataset-root", default=None,
                      help="Defaults to the standard path for --dataset-source if omitted.")
-    ap.add_argument("--name-prefix", default="final_")
-    ap.add_argument("--allow-legacy-prefix", action="store_true",
-                     help="Permit the pre-fix 'batch_' prefix (NOT for the final campaign).")
+    ap.add_argument("--name-prefix", default="batch_")
+    ap.add_argument("--resume-last", action="store_true",
+                     help="Ignore every other argument above and rerun the exact campaign "
+                          "spec saved from the last invocation (see .last_campaign.json next "
+                          "to this script). This exists specifically so an interrupted campaign "
+                          "-- power cut, terminal closed, anything -- can be resumed with "
+                          "nothing to remember or retype: just 'python run_batch_experiments.py "
+                          "--resume-last'. Already-completed runs are still skipped as always; "
+                          "this only saves you from having to recall the original command.")
     args = ap.parse_args()
-    if args.name_prefix == "batch_" and not args.allow_legacy_prefix:
-        print("Refusing prefix 'batch_': completed pre-fix runs under that prefix would be "
-              "skipped and silently reused. Use the default 'final_' (or another new prefix).")
-        sys.exit(2)
-    unknown = [m for m in args.modes if m not in FINAL_MODES]
-    if unknown:
-        print(f"Unknown mode(s) {unknown}; valid: {FINAL_MODES}")
-        sys.exit(2)
+
+    if args.resume_last:
+        if not os.path.isfile(CAMPAIGN_FILE):
+            print(f"No saved campaign found at {CAMPAIGN_FILE} -- nothing to resume. "
+                  f"Run with --sequences (and the rest) at least once first; "
+                  f"the spec gets saved automatically.")
+            sys.exit(1)
+        with open(CAMPAIGN_FILE) as f:
+            saved = json.load(f)
+        print(f"Resuming saved campaign from {CAMPAIGN_FILE} "
+              f"(originally started {saved.get('saved_at', 'unknown time')}):")
+        print(f"  dataset_source={saved['dataset_source']}  sequences={saved['sequences']}  "
+              f"seeds={saved['seeds']}  modes={saved['modes']}\n")
+        args.sequences = saved["sequences"]
+        args.seeds = saved["seeds"]
+        args.modes = saved["modes"]
+        args.max_frames = saved["max_frames"]
+        args.dataset_source = saved["dataset_source"]
+        args.dataset_root = saved["dataset_root"]
+        args.name_prefix = saved["name_prefix"]
+    else:
+        if not args.sequences:
+            ap.error("--sequences is required unless --resume-last is given")
+
     dataset_root = args.dataset_root or DEFAULT_DATASET_ROOTS[args.dataset_source]
+
+    if not args.resume_last:
+        # Save the campaign spec every time a fresh one is launched, so
+        # a later --resume-last always picks up the MOST RECENT campaign,
+        # not a stale one from days ago.
+        with open(CAMPAIGN_FILE, "w") as f:
+            json.dump(dict(
+                saved_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                sequences=args.sequences, seeds=args.seeds, modes=args.modes,
+                max_frames=args.max_frames, dataset_source=args.dataset_source,
+                dataset_root=dataset_root, name_prefix=args.name_prefix,
+            ), f, indent=2)
 
     try:
         requests.get(f"{BASE}/api/health", timeout=5).raise_for_status()
@@ -191,8 +292,24 @@ def main():
 
                     if existing_status in ("running", "pending"):
                         print(f"[{done}/{total}] {name}: already {existing_status} on the server, "
-                              f"reattaching instead of resubmitting ...", flush=True)
-                        uid = existing_uid
+                              f"checking it's actually progressing before reattaching "
+                              f"(waiting {STALE_CHECK_WAIT}s) ...", flush=True)
+                        if is_experiment_alive(existing_uid):
+                            print(f"    -> confirmed progressing, reattaching.")
+                            uid = existing_uid
+                        else:
+                            print(f"    -> no progress in {STALE_CHECK_WAIT}s -- looks like a "
+                                  f"stale/zombie run from a previous session (e.g. the server was "
+                                  f"restarted or lost power while this was running). Clearing it "
+                                  f"and resubmitting fresh instead of waiting on it forever.")
+                            delete_stale_experiment(existing_uid)
+                            try:
+                                uid = submit_fresh(name, args.dataset_source, dataset_root, seq, mode, seed, args.max_frames)
+                            except Exception as e:
+                                print(f"    -> ERROR resubmitting after clearing stale run: {e}")
+                                results_log.append(dict(name=name, sequence=seq, seed=seed, mode=mode,
+                                                         uid=None, status="submit_error"))
+                                continue
                     else:
                         # not seen before, or previously failed/cancelled -> fresh submit
                         print(f"[{done}/{total}] submitting {name} ...", flush=True)

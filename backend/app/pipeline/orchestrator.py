@@ -5,26 +5,12 @@ per-frame (homography -> decomposition -> prediction -> association) ->
 metrics -> saved results, with a live event emitted at every step (spec
 requirement #1) and every artifact written into the experiment's own
 output folder (spec requirement #4).
-
-Additions for the final campaign:
-  * provenance (git commit, dirty flag, library versions) is written into
-    config.json of every run, so every reported number is traceable to one
-    code version;
-  * oracle mode receives the TRUE platform transform of the injected drift,
-    G_{t-1->t} = W_t W_{t-1}^{-1}, where W_t is the injector's cumulative
-    warp H_{0->t}; it requires inject_synthetic_motion=True;
-  * the OpenCV RNG is seeded identically for every run and mode.
 """
 from __future__ import annotations
 
 import asyncio
 import datetime
-import platform
-import subprocess
 import traceback
-from pathlib import Path
-
-import cv2
 import numpy as np
 from typing import Callable, Awaitable, Dict
 
@@ -57,30 +43,6 @@ LOADERS = {
 _cancel_flags: Dict[str, asyncio.Event] = {}
 
 
-def _provenance() -> dict:
-    """Code version + environment for config.json. Never raises."""
-    here = Path(__file__).resolve().parent
-
-    def git(*args):
-        try:
-            return subprocess.run(["git", *args], cwd=here, capture_output=True,
-                                  text=True, timeout=10).stdout.strip() or None
-        except Exception:
-            return None
-
-    commit = git("rev-parse", "HEAD")
-    status = git("status", "--porcelain")
-    return dict(
-        git_commit=commit,
-        git_dirty=(bool(status) if commit else None),
-        python=platform.python_version(),
-        opencv=cv2.__version__,
-        numpy=np.__version__,
-        machine=platform.processor() or platform.machine(),
-        recorded_at_utc=datetime.datetime.utcnow().isoformat(timespec="seconds"),
-    )
-
-
 def request_cancel(experiment_uid: str) -> bool:
     """Called by the API route. Returns True if a running experiment was
     found and signalled, False if there was nothing to cancel."""
@@ -103,8 +65,6 @@ async def run_experiment(experiment_uid: str, params: dict, emit: EmitFn):
         await asyncio.sleep(0)  # yield so the socket actually flushes
 
     store = ExperimentStore(experiment_uid)
-    params = dict(params)
-    params["provenance"] = _provenance()
     store.save_config(params)
     db = SessionLocal()
     exp_row = db.query(Experiment).filter_by(experiment_uid=experiment_uid).first()
@@ -242,7 +202,6 @@ async def run_experiment(experiment_uid: str, params: dict, emit: EmitFn):
                                 f"ground-truth boxes."))
 
         tracker = MotionGroundedTracker(
-            opencv_seed=0,
             trajectory_mode=params.get("trajectory_mode", "homography"),
             window_length=params.get("window_length", 8),
             kmax_occlusion=params.get("kmax_occlusion", 20),
@@ -254,13 +213,6 @@ async def run_experiment(experiment_uid: str, params: dict, emit: EmitFn):
                 max_reproj_error=params.get("max_reproj_error", 3.0),
             ),
         )
-
-        oracle_mode = tracker.spec.estimator == "oracle"
-        if oracle_mode and synth_H_list is None:
-            raise RuntimeError(
-                "trajectory_mode='oracle' requires inject_synthetic_motion=True: the oracle "
-                "transform is the injected drift itself, which is only known when injected.")
-        prev_H_synth = None
 
         save_every = max(1, params.get("save_frame_every", 5))
         step_delay = params.get("step_delay_ms", 0) / 1000.0
@@ -305,14 +257,7 @@ async def run_experiment(experiment_uid: str, params: dict, emit: EmitFn):
                 dets = detector.detect(gray)
             await send(EV.STAGE_DETECTION, frame=frame_idx, n_detections=len(dets))
 
-            if oracle_mode and prev_frame is not None:
-                if H_synth is None or prev_H_synth is None:
-                    raise RuntimeError(f"oracle mode: no injected transform for frame {frame_idx}")
-                # True platform transform between consecutive OBSERVED frames.
-                tracker.set_oracle_transform(H_synth @ np.linalg.inv(prev_H_synth))
-
             result = tracker.step(frame_bgr, prev_frame, dets)
-            prev_H_synth = H_synth
 
             if gt_evaluator is not None:
                 matched_this_frame = [
