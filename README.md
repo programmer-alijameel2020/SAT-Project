@@ -232,6 +232,6 @@ occlusion-duration breakdown the paper's central claim depends on.
 to submit the data and enable experimental running, run the following commands 
 
 ```bash
-python .\run_batch_experiments.py --dataset-source SDM-Car --seeds 1 2 3 4 5 --sequences 1-1 2-3 32-1 38-1 41-3 42-1 47-1 47-2 47-3 51-1 53-1 6-1 61-1 66-1 66-2 8-2 8-3 9-1
-python .\run_batch_experiments.py --dataset-source VISO --seeds 1 2 3 4 5 --sequences car_001 car_003 car_008 car_010 car_012 car_013 car_014 car_016 car_020 car_021 car_022 car_024 car_025 plane_039 plane_040 plane_041 plane_042 plane_044 ship_045 train_046xt
+python run_batch_experiments.py --dataset-source SDM-Car --name-prefix final_ --sequences 1-1 2-3 32-1 38-1 41-3 42-1 47-1 47-2 47-3 51-1 53-1 6-1 61-1 66-1 66-2 8-2 8-3 9-1 --seeds 1 2 3 4 5 --modes affine gmc homography oracle raw raw_kf
+python run_batch_experiments.py --dataset-source VISO --name-prefix final_ --sequences car_001 car_003 car_008 car_010 car_012 car_013 car_014 car_016 car_020 car_021 car_022 car_024 car_025 plane_039 plane_040 plane_041 plane_042 plane_044 ship_045 train_046 --seeds 1 2 3 4 5 --modes affine gmc homography oracle raw raw_kf
 ```

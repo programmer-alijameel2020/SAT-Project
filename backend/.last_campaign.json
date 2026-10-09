@@ -1,5 +1,5 @@
 {
-  "saved_at": "2026-10-02T11:21:56.322707+00:00",
+  "saved_at": "2026-10-09T11:20:18.187719+00:00",
   "sequences": [
     "car_001",
     "car_003",
@@ -30,11 +30,15 @@
     5
   ],
   "modes": [
+    "affine",
+    "gmc",
+    "homography",
+    "oracle",
     "raw",
-    "homography"
+    "raw_kf"
   ],
   "max_frames": null,
   "dataset_source": "VISO",
   "dataset_root": "D:\\artificial_intelligence\\Sat-project\\datasets\\VISO\\mot\\mot",
-  "name_prefix": "batch_"
+  "name_prefix": "final_"
 }
